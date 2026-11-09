@@ -1,0 +1,13 @@
+[theme]
+primaryColor = "#1F3864"
+font = "sans serif"
+
+[server]
+maxUploadSize = 5
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"
