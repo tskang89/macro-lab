@@ -61,3 +61,71 @@ def lines(df: pd.DataFrame, x: str, ys: list[str], title: str = ""):
     # x축은 범주형 — 첫 관측 연도에서 시작해 마지막 관측 연도로 끝난다
     fig.update_xaxes(type="category")
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 시계열 (분기·연간) — x축 눈금은 마지막 관측 시점에서 거꾸로 맞춘다
+# ---------------------------------------------------------------------------
+PALETTE = ["#1F3864", "#2E6BB0", "#C8553D", "#E59866", "#5B9BD5", "#7F8C9A", "#8E44AD", "#27AE60",
+           "#D4AC0D", "#16A085", "#A04000", "#2C3E50"]
+
+
+def end_ticks(labels: list[str], step: int) -> list[str]:
+    """마지막 라벨에서 step 간격으로 거꾸로 고른 눈금 (마지막 관측 시점이 항상 축 끝에 표시됨)."""
+    n = len(labels)
+    return [labels[i] for i in range(n - 1, -1, -step)][::-1]
+
+
+def _ts_layout(fig, labels, title, unit, height, step):
+    step = step or max(1, int(np.ceil(len(labels) / 12)))
+    fig.update_xaxes(type="category", tickmode="array", tickvals=end_ticks(labels, step), tickangle=0)
+    fig.update_layout(title=title, height=height, margin=dict(l=10, r=10, t=50, b=10), yaxis_title=unit,
+                      legend=dict(orientation="h", y=-0.15), hovermode="x unified")
+    return fig
+
+
+def ts_lines(df: pd.DataFrame, x: str, ys: list[str], title: str = "", unit: str = "%", height: int = 420,
+             step: int | None = None, emphasize: str | None = None, dashed: tuple[str, ...] = (),
+             band: tuple[str, str] | None = None, zero: bool = True):
+    fig = go.Figure()
+    labels = df[x].astype(str).tolist()
+    if band:
+        lo, hi = band
+        fig.add_scatter(x=labels, y=df[hi], mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip")
+        fig.add_scatter(x=labels, y=df[lo], mode="lines", line=dict(width=0), fill="tonexty",
+                        fillcolor="rgba(127,140,154,0.18)", name="방법 간 범위", hoverinfo="skip")
+    for i, c in enumerate(ys):
+        width = 3 if c == emphasize else 1.6
+        color = "#111111" if c == emphasize else PALETTE[i % len(PALETTE)]
+        fig.add_scatter(x=labels, y=df[c], name=c, mode="lines",
+                        line=dict(width=width, color=color, dash="dot" if c in dashed else "solid"),
+                        hovertemplate="%{y:.2f}" + unit + "<extra>" + c + "</extra>")
+    if zero:
+        fig.add_hline(y=0, line_color="#999999", line_width=1)
+    return _ts_layout(fig, labels, title, unit, height, step)
+
+
+def ts_bar_line(df: pd.DataFrame, x: str, bar: str, lines_: list[str], title: str = "", unit: str = "%",
+                height: int = 380, step: int | None = None):
+    fig = go.Figure()
+    labels = df[x].astype(str).tolist()
+    colors = [POS if (v or 0) >= 0 else NEG for v in df[bar].fillna(0)]
+    fig.add_bar(x=labels, y=df[bar], name=bar, marker_color=colors, opacity=0.85,
+                hovertemplate="%{y:.2f}" + unit + "<extra>" + bar + "</extra>")
+    for i, c in enumerate(lines_):
+        fig.add_scatter(x=labels, y=df[c], name=c, mode="lines", line=dict(width=2, color=SEQ[i % len(SEQ)]))
+    fig.add_hline(y=0, line_color="#999999", line_width=1)
+    return _ts_layout(fig, labels, title, unit, height, step)
+
+
+def ts_stacked(df: pd.DataFrame, x: str, parts: list[str], total: str | None = None, title: str = "",
+               unit: str = "%p", height: int = 420, step: int | None = None):
+    fig = go.Figure()
+    labels = df[x].astype(str).tolist()
+    for i, c in enumerate(parts):
+        fig.add_bar(x=labels, y=df[c], name=c, marker_color=SEQ[i % len(SEQ)])
+    if total:
+        fig.add_scatter(x=labels, y=df[total], name=total, mode="lines+markers", line=dict(color="#111111", width=2))
+    fig.update_layout(barmode="relative")
+    fig.add_hline(y=0, line_color="#999999", line_width=1)
+    return _ts_layout(fig, labels, title, unit, height, step)

@@ -8,7 +8,7 @@
 |---|---|---|
 | 산업연관표 분석 | 운영 | 한국은행 산업연관표 2015–2024년, 대분류 33·중분류 83부문. 수요 파급 · 가격 파급 · 공급 차질 · 연관 구조 |
 | 국제 산업연관표 분석 | 운영 | OECD ICIO 2023년판 2011–2020년, 76개국+기타 지역 × 45개 산업. 국가 간 수요 파급 · 관세 · 공급망 차질 · 가격 파급 · GVC |
-| 잠재성장률 추정 | 준비 중 | HP·칼만필터 UC·생산함수 접근 비교 |
+| 잠재성장률 추정 | 운영 | 한국 실질 GDP·고용·물가·자본스톡(ECOS, 분기) 또는 사용자 자료. 10가지 방법(선형 추세·HP·실시간 HP·CF·Hamilton·BN·UC·다변량 필터·생산함수·구조 VAR)과 평균, 생산함수 기여도·자연실업률 |
 | DSGE 모형 | 준비 중 | Dynare 7.1/Octave로 추정, 웹은 Python 선형 해법 |
 | HANK 모형 | 준비 중 | `D:\Claude\Projects\HANK\hank2_soe` 연결(SSJ) |
 
@@ -21,7 +21,7 @@ cd D:\Claude\Projects\macro-lab
 
 브라우저에서 <http://localhost:8501> 을 엽니다. 가상환경을 새로 만들 때는 `python -m venv .venv` 다음 `pip install -r requirements-dev.txt` 를 실행합니다.
 
-테스트(34건: 한국은행 공표 유발계수 대조, 항등식, 엑셀 출력):
+테스트(46건: 한국은행 공표 유발계수 대조, 항등식, 잠재성장률 필터 성질, 엑셀 출력):
 
 ```bash
 .venv\Scripts\python.exe -m pytest -q tests
@@ -80,6 +80,13 @@ tests/                     엔진·엑셀 검증
   2. `data/raw/icio/ICIO2025_2016-2022_SML.zip` 처럼 이름 앞에 `ICIO2025_` 를 붙여 저장합니다.
   3. `build\build_icio.py` 를 실행하면 화면의 'ICIO 판' 선택에 2025가 생깁니다. 국가·산업 한글명(50개 산업 포함)은 이미 들어 있습니다.
 
+**잠재성장률 자료 (ECOS Open API)**
+실질 GDP(200Y104), 경제활동인구(901Y027, 계절조정), 소비자물가(901Y009·901Y010), 제조업 평균가동률(901Y025), 실질 생산자본스톡(291Y504)을 받아 `data/processed/potential/kr_quarterly.csv` 로 만듭니다. 분기 GDP 가 새로 나오면 이 한 줄을 돌리고 push 합니다.
+
+```bash
+.venv\Scripts\python.exe build\build_potential.py
+```
+
 ## 배포 (무료 공개: GitHub + Streamlit Community Cloud)
 
 코드는 GitHub 저장소 `tskang89/macro-lab` 에 두고, Streamlit Community Cloud가 그 저장소를 실행합니다. 저장소에 push 하면 사이트도 자동으로 갱신됩니다.
@@ -94,6 +101,12 @@ tests/                     엔진·엑셀 검증
 - HANK처럼 메모리를 많이 쓰는 모듈을 붙여 한도를 넘으면 `Dockerfile` 로 컨테이너 호스팅(Hugging Face Spaces PRO 등)으로 옮깁니다. 2026-11 현재 Hugging Face 의 Docker Space 는 무료 계정에서 만들 수 없습니다.
 
 ## 방법론 요약
+
+**잠재성장률** (`engines/potential/methods.py`): 모든 방법이 y=100·log(실질 GDP)에서 잠재 GDP 를 구하고 GDP 갭 = y − y*.
+- 통계적 추세: 선형(구조변화 꺾은선), HP(λ=1600, AR(4) 12분기 연장으로 끝점 보정), 단방향 HP(실시간), CF 대역통과(주기 32분기 초과를 잠재로), Hamilton(2018) h=8·p=4.
+- 시계열 모형: BN 필터(Kamber·Morley·Wong 2018, δ 고정 제약 최소제곱, 40분기 이동평균 제거), 비관측 요인 모형(평활 추세+AR(2), statsmodels 칼만).
+- 경제 구조: 다변량 HP(필립스곡선·오쿤, 계수·가중치 반복 갱신, 자연실업률 동시 추정), 생산함수(α=0.35, 추세 TFP·실제 자본·잠재 노동=추세 인구×추세 참가율×(1−자연실업률), 근로시간 미반영), 구조 VAR(GDP 성장률·실업률, Blanchard-Quah 장기 제약).
+- 방법 평균: 갭의 단순 평균.
 
 - **국내 수량모형**: Δx = (I−Ad)⁻¹ Δfd. Ad는 한국은행 생산유발계수표에서 역산했으므로 유발계수가 공표치와 일치합니다(테스트로 확인). 최종수요의 국산 비율은 최종재 수입을 수출 외 최종수요에 비례 배분해 구합니다.
 - **국내 가격모형**: Δp' = (Δπ'Am + Δw')L. 환율·유가·수입품 가격·단위당 임금·이윤·세금 충격을 넣을 수 있고, 소비자물가는 가계소비 가중입니다.

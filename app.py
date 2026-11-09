@@ -25,6 +25,6 @@ st.markdown("""
 ROOT = os.path.dirname(os.path.abspath(__file__))
 st.logo(os.path.join(ROOT, "assets", "logo.svg"), size="large")
 with st.sidebar:
-    st.caption("산업연관 · 국제산업연관 · (예정) 잠재성장률 · DSGE · HANK")
+    st.caption("산업연관 · 국제산업연관 · 잠재성장률 · (예정) DSGE · HANK")
 
 navigation(discover()).run()

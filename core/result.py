@@ -20,6 +20,7 @@ class ExcelChart:
     title: str = ""
     kind: str = "bar"          # bar | col | line
     top: int | None = 20       # 절댓값 기준 상위 n개만 (None 이면 전부)
+    label_skip: int | None = None  # 시계열: 눈금 간격. 마지막 관측 시점이 눈금에 오도록 앞쪽 행을 맞춘다
 
 
 @dataclass

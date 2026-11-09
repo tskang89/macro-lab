@@ -79,14 +79,20 @@ def _write_table(ws, df: pd.DataFrame, start_row: int = 1):
         ws.auto_filter.ref = f"A{start_row}:{get_column_letter(len(df.columns))}{start_row + len(df)}"
 
 
-def _add_chart(wb, ws, df: pd.DataFrame, spec):
+def _add_chart(wb, ws, df: pd.DataFrame, spec, slot: int = 0):
     if spec.category not in df.columns or not all(v in df.columns for v in spec.values):
         return
     d = df[[spec.category] + spec.values].copy()
-    if spec.top and len(d) > spec.top:
+    if spec.label_skip:
+        k = spec.label_skip
+        d = d.iloc[(len(d) - 1) % k:]          # 첫 행부터 k 간격 눈금이 마지막 행에 닿도록
+    elif spec.top and len(d) > spec.top:
         d = d.reindex(d[spec.values[0]].abs().sort_values(ascending=False).index[: spec.top])
-    # 차트용 보조 표: 원 표 오른쪽에 둔다
-    col0 = len(df.columns) + 3
+    # 차트용 보조 표: 원 표 오른쪽에 둔다 (같은 시트의 두 번째 차트부터는 더 오른쪽)
+    col0 = len(df.columns) + 3 + sum(ws._chart_widths[:slot]) if hasattr(ws, "_chart_widths") else len(df.columns) + 3
+    if not hasattr(ws, "_chart_widths"):
+        ws._chart_widths = []
+    ws._chart_widths.append(len(spec.values) + 2)
     ws.cell(row=1, column=col0, value="차트 자료").font = SUB_FONT
     for j, name in enumerate([spec.category] + spec.values):
         ws.cell(row=2, column=col0 + j, value=name).font = Font(bold=True)
@@ -103,13 +109,20 @@ def _add_chart(wb, ws, df: pd.DataFrame, spec):
             ch.y_axis.scaling.orientation = "minMax"
             ch.x_axis.scaling.orientation = "maxMin"
     ch.title = spec.title or spec.values[0]
-    ch.height, ch.width = max(7.5, 0.45 * n + 2), 18
+    ch.x_axis.delete = False
+    ch.y_axis.delete = False
+    if spec.label_skip:
+        ch.x_axis.tickLblSkip = spec.label_skip
+        ch.x_axis.tickMarkSkip = spec.label_skip
+        ch.x_axis.tickLblPos = "low"
+    ch.height, ch.width = (9, 24) if spec.label_skip else (max(7.5, 0.45 * n + 2), 18)
     data = Reference(ws, min_col=col0 + 1, max_col=col0 + len(spec.values), min_row=2, max_row=2 + n)
     cats = Reference(ws, min_col=col0, min_row=3, max_row=2 + n)
     ch.add_data(data, titles_from_data=True)
     ch.set_categories(cats)
     ch.legend.position = "b"
-    ws.add_chart(ch, ws.cell(row=2, column=col0 + len(spec.values) + 2).coordinate)
+    anchor_col = len(df.columns) + 3 + sum(ws._chart_widths) + 1
+    ws.add_chart(ch, ws.cell(row=2 + slot * 20, column=anchor_col).coordinate)
 
 
 def to_excel(res: Result) -> bytes:
@@ -163,9 +176,12 @@ def to_excel(res: Result) -> bytes:
         ws = wb.create_sheet(_sheet_name(name, used))
         sheet_of[name] = ws
         _write_table(ws, df.reset_index(drop=True))
+    slots: dict[str, int] = {}
     for spec in res.charts:
         if spec.table in sheet_of:
-            _add_chart(wb, sheet_of[spec.table], res.tables[spec.table].reset_index(drop=True), spec)
+            k = slots.get(spec.table, 0)
+            _add_chart(wb, sheet_of[spec.table], res.tables[spec.table].reset_index(drop=True), spec, k)
+            slots[spec.table] = k + 1
 
     # 방법론·주석
     ws = wb.create_sheet(_sheet_name("방법론·주석", used))
