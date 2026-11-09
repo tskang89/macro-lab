@@ -5,7 +5,11 @@
   urate    실업률 (%)                          — 다변량 필터·SVAR·생산함수
   core     근원 소비자물가 지수                — 다변량 필터(필립스곡선)
   emp, lf, pop15  취업자·경제활동인구·15세 이상 인구 — 생산함수
-  capital  실질 자본스톡 (분기말)              — 생산함수
+  hours    취업자 1인당 평균 근로시간           — 생산함수(없으면 취업자 수 기준)
+  ksvc     자본서비스 물량지수                  — 생산함수(없으면 capital)
+  capital  실질 자본스톡 (분기말)              — 생산함수(자본서비스 대안)
+  rate     정책금리 (%)                         — 준구조모형(LW)
+  pie      기대인플레이션 (%)                   — 준구조모형·생산함수 다변량 필터(없으면 근원물가 과거 평균)
 """
 from __future__ import annotations
 
@@ -29,6 +33,10 @@ COLUMNS = {
     "core": "근원물가: 농산물·석유류 제외 (2020=100)",
     "capu": "제조업 평균가동률 (%)",
     "capital": "실질 생산자본스톡 (분기말 보간, 십억원)",
+    "ksvc": "자본서비스 물량지수 (전산업, 2020=100, 분기 보간)",
+    "hours": "취업자 1인당 연간 실근로시간 (시간, 분기 보간)",
+    "rate": "한국은행 기준금리 (분기 평균, %)",
+    "pie": "기대인플레이션: 소비자 향후 1년 (분기 평균, %)",
 }
 
 
@@ -73,16 +81,29 @@ def label(p: pd.Period) -> str:
     return f"{str(p.year)[2:]}.{p.quarter}Q"
 
 
+NEEDS = {
+    "lw": "실업률(urate)·근원물가(core)·정책금리(rate)",
+    "mv": "실업률(urate)·근원물가(core)",
+    "svar": "실업률(urate)",
+    "pf": "고용(emp·lf·pop15)·실업률(urate)·자본(ksvc 또는 capital)",
+    "pfmv": "고용(emp·lf·pop15)·실업률(urate)·근원물가(core)·자본(ksvc 또는 capital)",
+}
+
+
 def available_methods(df: pd.DataFrame) -> dict[str, bool]:
-    has = lambda *c: all(x in df.columns and df[x].notna().sum() > 40 for x in c)
+    has = lambda *c: all(x in df.columns and df[x].notna().sum() > 40 for x in c)  # noqa: E731
+    cap = has("ksvc") or has("capital")
     return {
+        "lw": has("gdp", "urate", "core", "rate"),
         "mv": has("gdp", "urate", "core"),
-        "pf": has("gdp", "emp", "lf", "pop15", "urate", "capital"),
         "svar": has("gdp", "urate"),
+        "pf": has("gdp", "emp", "lf", "pop15", "urate") and cap,
+        "pfmv": has("gdp", "emp", "lf", "pop15", "urate", "core") and cap,
     }
 
 
 def template_csv() -> bytes:
-    rows = ["quarter,gdp,urate,core,emp,lf,pop15,capital",
-            "2000Q1,,,,,,,", "2000Q2,,,,,,,"]
+    cols = "quarter,gdp,urate,core,emp,lf,pop15,hours,ksvc,capital,capu,rate,pie"
+    blank = "," * cols.count(",")
+    rows = [cols, "2000Q1" + blank, "2000Q2" + blank]
     return ("\n".join(rows) + "\n").encode("utf-8-sig")

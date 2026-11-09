@@ -56,7 +56,8 @@ def ests(kr):
 
 
 def test_all_methods_run(ests):
-    assert set(M.METHODS) | {"avg"} == set(ests)
+    assert set(M.METHODS) | set(M.AVG_KEYS) == set(ests)
+    assert set(M.GROUP_OF) == set(M.METHODS)
 
 
 def test_recent_potential_growth_plausible(kr, ests):
@@ -67,7 +68,8 @@ def test_recent_potential_growth_plausible(kr, ests):
             continue
         assert 1.0 < row[e.name] < 3.5, (e.name, row[e.name])
     # 코로나 충격 2020년 갭은 대부분 방법에서 마이너스
-    neg = (gp.set_index("연도").loc[2020].drop(labels=["방법 평균"]) < 0).mean()
+    avg_names = [e.name for k, e in ests.items() if k.startswith("avg")]
+    neg = (gp.set_index("연도").loc[2020].drop(labels=avg_names) < 0).mean()
     assert neg >= 0.8
 
 
@@ -81,21 +83,86 @@ def test_mv_signs(ests):
     assert np.corrcoef(both.T)[0, 1] > 0.7
 
 
-def test_pf_contributions_add_up(ests):
-    e = ests["pf"]
+@pytest.mark.parametrize("key", ["pf", "pfmv"])
+def test_pf_contributions_add_up(ests, key):
+    e = ests[key]
     comp = e.extra["잠재성장률 기여도"].dropna()
     dtr = e.trend.diff(4).reindex(comp.index)
     assert np.allclose(comp["잠재성장률(로그 근사)"], dtr, atol=1e-8)
+    assert {"노동: 근로시간", "노동: 15세이상인구", "자본", "총요소생산성"} <= set(comp.columns)
+
+
+def test_pf_uses_capital_services_and_hours(kr, ests):
+    p = ests["pf"].params
+    assert "자본서비스" in p["자본투입"] and "근로시간" in p["잠재노동 정의"]
+    # 2001~05년 → 2016~20년 잠재성장률 하락 (한국은행 5.0% → 2.6% 수준)
+    ga, _ = A.annual_tables(kr, {"pf": ests["pf"]}, "2001Q1")
+    g = ga.set_index("연도")["생산함수 접근"]
+    assert 4.3 < g.loc[2001:2005].mean() < 6.0 and 2.0 < g.loc[2016:2020].mean() < 3.2
+    # 근로시간 기여도는 마이너스(근로시간 단축)
+    c = ests["pf"].extra["잠재성장률 기여도"]["노동: 근로시간"]
+    assert c.loc["2005Q1":"2019Q4"].mean() < 0
+
+
+def test_pf_variants(kr):
+    e1 = M.pf(kr, labour="emprate")
+    e2 = M.pf(kr, capital="stock", cu_adjust=False)
+    for e in (e1, e2):
+        assert e.trend.notna().sum() > 80
+    assert "생산자본스톡" in e2.params["자본투입"]
+
+
+def test_lw_signs(ests):
+    p = ests["lw"].params
+    assert p["IS: 실질금리 갭 계수 a_r"] < 0 and p["필립스: 갭 계수 b_y"] > 0 and p["오쿤 계수 θ"] > 0
+    assert p["IS: 갭 AR(1) a1"] + p["IS: 갭 AR(2) a2"] < 0.98
+    t = ests["lw"].extra["중립금리·자연실업률"]
+    assert t["중립금리 추정(%)"].notna().all() and 2 < t["자연실업률 추정(%)"].iloc[-1] < 5
+
+
+def test_kalman_matches_statsmodels_local_level():
+    import statsmodels.api as sm
+    from engines.potential import statespace as SS
+    rng = np.random.default_rng(0)
+    x = np.cumsum(rng.normal(size=120)) + rng.normal(size=120)
+    mod = sm.tsa.UnobservedComponents(x, level="llevel")
+    res = mod.fit(disp=False)
+    s2e, s2l = res.params
+    M_ = SS.SSM(np.array([[1.0]]), np.zeros((120, 1)), np.array([[s2e]]), np.array([[1.0]]), np.zeros(1),
+                np.array([[s2l]]), np.array([x[0]]), np.array([[1e7]]))
+    ll = SS.kfilter(x[:, None], M_, burn=1)[0]
+    assert abs(ll - res.llf) < 0.5
+    sm_ = SS.ksmooth(x[:, None], M_)[0][:, 0]
+    assert np.allclose(sm_, res.level["smoothed"], atol=1e-3)
+
+
+def test_denton_preserves_annual_means():
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location("bp", pathlib.Path(__file__).parents[1] / "build" / "build_potential.py")
+    bp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bp)
+    a = pd.Series([100.0, 103.0, 101.0, 108.0], index=[2000, 2001, 2002, 2003])
+    q = bp.denton(a, 2000, 2003)
+    assert np.allclose(q.groupby(q.index.year).mean().to_numpy(), a.to_numpy())
 
 
 def test_svar_long_run_restriction(ests):
     assert abs(ests["svar"].params["수요 충격의 GDP 장기 효과(0 이어야 함)"]) < 1e-8
 
 
-def test_ensemble_is_mean(ests):
-    keys = [k for k in ests if k != "avg"]
-    G = pd.concat([ests[k].gap for k in keys], axis=1).mean(axis=1)
+def test_ensemble_is_mean_of_group_means(ests):
+    for g in M.GROUPS:
+        keys = [k for k in ests if M.GROUP_OF.get(k) == g]
+        G = pd.concat([ests[k].gap for k in keys], axis=1).mean(axis=1)
+        assert np.allclose(G.dropna(), ests[f"avg_{g}"].gap.dropna())
+    G = pd.concat([ests[f"avg_{g}"].gap for g in M.GROUPS], axis=1).mean(axis=1)
     assert np.allclose(G.dropna(), ests["avg"].gap.dropna())
+
+
+def test_simple_average_mode(kr):
+    e, _ = A.run(kr, {"methods": ["hp", "uc", "mv"], "avg_mode": "all"})
+    G = pd.concat([e[k].gap for k in ("hp", "uc", "mv")], axis=1).mean(axis=1)
+    assert np.allclose(G.dropna(), e["avg"].gap.dropna())
 
 
 def test_upload_parse_and_univariate_only():
@@ -103,7 +170,7 @@ def test_upload_parse_and_univariate_only():
     df = D.parse_upload(csv.encode())
     assert df.index.freqstr.startswith("Q") and len(df) == len(IDX)
     e, errs = A.run(df, {"start": "1990Q1"})
-    assert {"mv", "pf", "svar"} <= set(errs)
+    assert {"mv", "pf", "svar", "lw", "pfmv"} <= set(errs)
     assert "hp" in e and "avg" in e
 
 

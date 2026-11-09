@@ -1,20 +1,28 @@
-"""잠재 GDP·GDP 갭 추정 방법들.
+"""잠재 GDP·GDP 갭 추정 방법들 — 통계모형·준구조모형·생산함수모형 3분류.
 
 모든 방법은 y = 100·log(실질 GDP) 를 받아 잠재 GDP(같은 단위의 로그 수준)와 GDP 갭(%)을 돌려준다.
     gap_t = y_t - y*_t   (실제가 잠재보다 1% 높으면 +1)
 잠재성장률은 잠재 GDP 수준에서 계산한다(전년동기비 또는 연간).
 
-방법
+통계모형 (GDP 시계열의 통계적 성질만 이용)
   linear   선형 추세(구조변화 시점에서 기울기만 바뀌는 연속 꺾은선)
   hp       Hodrick-Prescott 필터 (끝점 보정: AR 예측으로 연장 후 필터)
   hp1      단방향 HP 필터 (각 시점까지의 자료만 쓰는 실시간 추정)
-  cf       Christiano-Fitzgerald 대역통과 필터 (주기 32분기 넘는 변동만 잠재로)
-  hamilton Hamilton(2018) 회귀 필터 (8분기 뒤 GDP 를 현재·과거 4분기로 예측, 예측치 = 추세)
-  bn       Beveridge-Nelson 필터 (Kamber-Morley-Wong 2018 방식, 신호대잡음비 제약)
-  uc       비관측 요인 모형 (평활 추세 + AR(2) 순환, 칼만 필터·최우추정)
-  mv       다변량 필터 (HP + 필립스곡선 + 오쿤의 법칙; 잠재 GDP 와 자연실업률 동시 추정)
-  pf       생산함수 접근 (콥-더글러스: 총요소생산성·자본·잠재 노동)
-  svar     구조 VAR (Blanchard-Quah 장기 제약: 수요 충격은 GDP 수준에 장기 영향 없음)
+  cf       Christiano-Fitzgerald 대역통과 필터
+  hamilton Hamilton(2018) 회귀 필터
+  bn       Beveridge-Nelson 필터 (Kamber-Morley-Wong 2018 방식)
+  uc       비관측 요인 모형 (평활 추세 + AR(2) 순환, 칼만 필터)
+준구조모형 (GDP 갭과 물가·고용·금리의 관계식을 함께 추정)
+  lw       Laubach-Williams(2003)형 준구조모형 (IS곡선·필립스곡선·오쿤의 관계식, 칼만 필터 최우추정)
+           — 한국은행 권지호 외(2019) 준구조모형을 따름
+  mv       다변량 HP 필터 (필립스곡선·오쿤의 법칙; Laxton-Tetlow 1992)
+  svar     구조 VAR (Blanchard-Quah 장기 제약)
+생산함수모형 (총요소생산성·노동·자본 투입으로 잠재 GDP 구성)
+  pf       생산함수 접근 — 한국은행 권지호 외(2019)·이은경 외(2024) 방식
+           잠재노동 = 15세이상인구 × 경제활동참가율 추세 × (1-자연실업률) × 평균 근로시간 추세
+           자본투입 = 자본서비스 물량지수(추세로 간주), 총요소생산성 추세는 가동률 효과를 걸러낸 뒤 HP
+  pfmv     생산함수 다변량 필터 — 한국은행 다변량필터링모형(미 연준 Fleischman-Roberts 2011 수정형)
+           생산함수에 필립스곡선·오쿤의 관계식(참가율·고용률·근로시간 갭)을 결합해 상태공간모형으로 동시 추정
 """
 from __future__ import annotations
 
@@ -25,6 +33,8 @@ import pandas as pd
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
+from engines.potential import statespace as SS
+
 METHODS = {
     "linear": "선형 추세(구조변화)",
     "hp": "HP 필터",
@@ -33,15 +43,17 @@ METHODS = {
     "hamilton": "Hamilton 회귀 필터",
     "bn": "Beveridge-Nelson 필터",
     "uc": "비관측 요인 모형(UC)",
-    "mv": "다변량 필터(필립스·오쿤)",
-    "pf": "생산함수 접근",
+    "lw": "준구조모형(LW형: IS·필립스·오쿤)",
+    "mv": "다변량 HP 필터(필립스·오쿤)",
     "svar": "구조 VAR(Blanchard-Quah)",
+    "pf": "생산함수 접근",
+    "pfmv": "생산함수 다변량 필터(FRB/US형)",
 }
-GROUP = {
-    "linear": "통계적 추세", "hp": "통계적 추세", "hp1": "통계적 추세", "cf": "통계적 추세",
-    "hamilton": "통계적 추세", "bn": "시계열 모형", "uc": "시계열 모형",
-    "mv": "경제 구조 반영", "pf": "경제 구조 반영", "svar": "경제 구조 반영",
-}
+GROUPS = {"stat": "통계모형", "semi": "준구조모형", "pf": "생산함수모형"}
+GROUP_OF = {"linear": "stat", "hp": "stat", "hp1": "stat", "cf": "stat", "hamilton": "stat", "bn": "stat", "uc": "stat",
+            "lw": "semi", "mv": "semi", "svar": "semi", "pf": "pf", "pfmv": "pf"}
+GROUP = {k: GROUPS[g] for k, g in GROUP_OF.items()}
+AVG_KEYS = {"avg": "방법 평균", "avg_stat": "통계모형 평균", "avg_semi": "준구조모형 평균", "avg_pf": "생산함수모형 평균"}
 
 
 @dataclass
@@ -107,7 +119,7 @@ def _finish(key: str, y: pd.Series, trend: pd.Series, **kw) -> Estimate:
 
 
 # ---------------------------------------------------------------------------
-# 통계적 추세
+# 통계모형
 # ---------------------------------------------------------------------------
 def linear(y: pd.Series, breaks: list[str] | None = None) -> Estimate:
     s = y.dropna()
@@ -216,9 +228,6 @@ def bn(y: pd.Series, p: int = 8, window: int = 40, delta: float = 0.2) -> Estima
                                         "이동평균 기간(분기)": window}, notes=notes)
 
 
-# ---------------------------------------------------------------------------
-# 시계열 모형
-# ---------------------------------------------------------------------------
 def uc(y: pd.Series) -> Estimate:
     import statsmodels.api as sm
     s = y.dropna()
@@ -242,7 +251,7 @@ def uc(y: pd.Series) -> Estimate:
 
 
 # ---------------------------------------------------------------------------
-# 경제 구조 반영
+# 준구조모형
 # ---------------------------------------------------------------------------
 def _inflation(core: pd.Series) -> pd.Series:
     return (core / core.shift(4) - 1) * 100
@@ -312,55 +321,113 @@ def mv(y: pd.Series, u: pd.Series, core: pd.Series, lam: float = 1600, lam_u: fl
                    extra={"자연실업률": extra})
 
 
-def pf(df: pd.DataFrame, alpha: float = 0.35, lam: float = 1600, extend: int = 12,
-       nairu: pd.Series | None = None) -> Estimate:
-    """콥-더글러스 생산함수: Y = A·K^α·L^(1-α).
+def expected_inflation(df: pd.DataFrame) -> pd.Series:
+    """기대인플레이션: 일반인 향후 1년 기대인플레이션(pie)이 있으면 그것, 없으면 근원물가 상승률의 직전 4분기 평균."""
+    pi = _inflation(df["core"])
+    back = pi.shift(1).rolling(4).mean()
+    if "pie" in df.columns and df["pie"].notna().any():
+        return df["pie"].combine_first(back)
+    return back
 
-    잠재 GDP = 추세 TFP · 실제 자본 · 잠재 노동
-    잠재 노동 = 추세 15세 이상 인구 × 추세 경제활동참가율 × (1 − 자연실업률)
+
+def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: float = 0.03, c: float = 1.0,
+       sy_max: float = 0.25) -> Estimate:
+    """Laubach-Williams(2003)형 준구조모형 (한국은행 권지호 외 2019 준구조모형).
+
+      IS곡선     ỹ_t = a1 ỹ_{t-1} + a2 ỹ_{t-2} + (a_r/2) Σ_{j=1,2} (r_{t-j} − r*_{t-j}) + ε1
+      필립스곡선 π_t = b_π π_{t-1} + (1−b_π) πᵉ_t + b_y ỹ_{t-1} + ε2
+      오쿤       u_t = u*_t − θ ỹ_t + ε3
+      잠재 GDP   y*_t = y*_{t-1} + g_{t-1} + ε4 ,  g_t = g_{t-1} + ε5 ,  σ5 = λ_g σ4
+      중립금리   r*_t = c·4g_t + z_t ,  z_t = z_{t-1} + ε6 ,  σ6 = λ_z σ1 / |a_r|
+      자연실업률 u*_t = u*_{t-1} + ε7
+    r = 기준금리 − 기대인플레이션(실질 기준금리), π = 근원물가 상승률(전년동기비).
+    λ_g·λ_z 는 최우추정의 쏠림(pile-up) 문제를 피하려고 고정(LW 2003 의 중위불편 추정 방식 대신).
     """
-    need = ["gdp", "emp", "lf", "pop15", "urate", "capital"]
-    d = df[need].copy()
-    d["k"] = log100(d["capital"]).shift(1)          # 분기초 자본 = 직전 분기말
-    d = d.dropna()
-    y = log100(d["gdp"])
-    k = d["k"]
-    l = log100(d["emp"])
-    tfp = y - alpha * k - (1 - alpha) * l
-    tfp_t = hp_series(tfp, lam, extend)
-    pop_t = hp_series(log100(d["pop15"]), lam, extend)
-    part = d["lf"] / d["pop15"] * 100
-    part_t = hp_series(part, lam, extend)
-    if nairu is None:
-        u_t = hp_series(d["urate"], lam * 4, extend)
-        nsrc = f"실업률의 HP 추세(λ={lam * 4:g})"
-    else:
-        u_t = nairu.reindex(d.index).interpolate(limit_direction="both")
-        nsrc = "다변량 필터의 자연실업률"
-    l_t = pop_t + log100(part_t / 100) + log100(1 - u_t / 100)
-    ystar = tfp_t + alpha * k + (1 - alpha) * l_t
-    yy = log100(df["gdp"])
-    est = _finish("pf", yy, ystar)
-    # 잠재성장률 기여도 (전년동기비 로그 차분, %p)
-    comp = pd.DataFrame({
-        "총요소생산성": tfp_t.diff(4),
-        "자본": alpha * k.diff(4),
-        "노동: 인구": (1 - alpha) * pop_t.diff(4),
-        "노동: 경제활동참가율": (1 - alpha) * log100(part_t / 100).diff(4),
-        "노동: 고용률(1-자연실업률)": (1 - alpha) * log100(1 - u_t / 100).diff(4),
-    })
-    comp["잠재성장률(로그 근사)"] = comp.sum(axis=1, min_count=5)
-    inputs = pd.DataFrame({"실제 TFP(로그×100)": tfp, "추세 TFP": tfp_t, "자본(로그×100)": k,
-                           "실제 취업자(로그×100)": l, "잠재 취업자(로그×100)": l_t,
-                           "경제활동참가율(%)": part, "추세 참가율(%)": part_t,
-                           "실업률(%)": d["urate"], "자연실업률(%)": u_t})
-    est.params = {"자본소득분배율 α": alpha, "HP λ": lam, "끝점 연장(분기)": extend, "자연실업률": nsrc}
-    est.notes = [f"콥-더글러스 생산함수 Y = A·K^α·L^(1-α), α={alpha:g}(자본소득 몫). 총요소생산성(TFP)은 솔로 잔차.",
-                 "잠재 GDP = 추세 TFP + α·자본 + (1-α)·잠재 노동 (로그). 자본은 완전가동으로 보고 실제 스톡(직전 분기말)을 그대로 씀.",
-                 f"잠재 노동 = 추세 15세 이상 인구 × 추세 경제활동참가율 × (1-자연실업률). 자연실업률: {nsrc}.",
-                 "근로시간 자료는 쓰지 않아(취업자 수 기준) 근로시간 감소 효과는 TFP 에 섞여 있음.",
-                 "자본스톡은 연말 실질 생산자본스톡(한국은행)을 분기로 로그 선형 보간했고, 마지막 공표 연도 이후는 최근 3년 평균 증가율로 연장."]
-    est.extra = {"잠재성장률 기여도": comp, "생산함수 투입": inputs}
+    y = log100(df["gdp"])
+    pi = _inflation(df["core"])
+    pe = expected_inflation(df)
+    r = df["rate"] - pe
+    u = df["urate"]
+    d = pd.DataFrame({"y": y, "y1": y.shift(1), "y2": y.shift(2), "r1": r.shift(1), "r2": r.shift(2),
+                      "pi": pi, "pi1": pi.shift(1), "pe": pe, "u": u}).loc[start:].dropna()
+    Y = d[["y", "pi", "u"]].to_numpy()
+    hp_y = hp_array(d["y"].to_numpy(), 1600)
+    g0 = float(np.mean(np.diff(hp_y[:8])))
+    z0 = float(d["r1"].iloc[:8].mean() - c * 4 * g0)
+    us0 = float(hp_array(d["u"].to_numpy(), 6400)[0])
+    m = 10
+    y1, y2, r1, r2 = (d[c_].to_numpy() for c_ in ("y1", "y2", "r1", "r2"))
+    pi1, pev, yv = d["pi1"].to_numpy(), d["pe"].to_numpy(), d["y"].to_numpy()
+
+    def build(x):
+        a1, a2, ar, bpi, by, th = x[:6]
+        sIS, spi, sys_, su, sus = np.exp(x[6:11])
+        T = np.zeros((m, m))
+        T[0, 0] = T[0, 3] = 1
+        T[1, 0] = 1
+        T[2, 1] = 1
+        T[3, 3] = 1
+        T[4, 3] = 1
+        T[5, 4] = 1
+        T[6, 6] = 1
+        T[7, 6] = 1
+        T[8, 7] = 1
+        T[9, 9] = 1
+        Q = np.zeros((m, m))
+        Q[0, 0] = sys_ ** 2
+        Q[3, 3] = (lam_g * sys_) ** 2
+        Q[6, 6] = (lam_z * sIS / max(abs(ar), 1e-3)) ** 2
+        Q[9, 9] = sus ** 2
+        Z = np.zeros((3, m))
+        Z[0, 0], Z[0, 1], Z[0, 2] = 1, -a1, -a2
+        Z[0, 4] = Z[0, 5] = -(ar / 2) * c * 4
+        Z[0, 7] = Z[0, 8] = -(ar / 2)
+        Z[1, 1] = -by
+        Z[2, 9], Z[2, 0] = 1, th
+        D = np.column_stack([a1 * y1 + a2 * y2 + (ar / 2) * (r1 + r2),
+                             bpi * pi1 + (1 - bpi) * pev + by * y1,
+                             -th * yv])
+        H = np.diag([sIS ** 2, spi ** 2, su ** 2])
+        a0 = np.array([hp_y[0], hp_y[0] - g0, hp_y[0] - 2 * g0, g0, g0, g0, z0, z0, z0, us0])
+        P0 = np.diag([0.5, 0.5, 0.5, 0.15, 0.15, 0.15, 1.0, 1.0, 1.0, 0.5]) ** 2
+        return SS.SSM(Z, D, H, T, np.zeros(m), Q, a0, P0)
+
+    def build_s(x):
+        if x[0] + x[1] >= 0.98:            # 순환의 정상성
+            raise ValueError
+        return build(x)
+
+    x0 = np.array([1.2, -0.3, -0.05, 0.8, 0.1, 0.2, np.log(0.5), np.log(0.3), np.log(0.8 * sy_max), np.log(0.2),
+                   np.log(0.1)])
+    bounds = ([(-0.5, 1.7), (-0.95, 0.5), (-1.0, -0.0025), (0.0, 0.99), (0.025, 1.0), (0.01, 1.0)] + [(-6, 2)] * 2
+              + [(-6, np.log(sy_max))] + [(-6, 2)] * 2)
+    xh, ll, _ = SS.fit(Y, build_s, x0, bounds)
+    st, _, _ = SS.ksmooth(Y, build(xh))
+    idx = d.index
+    ystar = pd.Series(st[:, 0], index=idx)
+    g = pd.Series(st[:, 3], index=idx)
+    rstar = c * 4 * g + pd.Series(st[:, 6], index=idx)
+    ustar = pd.Series(st[:, 9], index=idx)
+    est = _finish("lw", y, ystar)
+    a1, a2, ar, bpi, by, th = xh[:6]
+    sd = np.exp(xh[6:11])
+    est.params = {"IS: 갭 AR(1) a1": a1, "IS: 갭 AR(2) a2": a2, "IS: 실질금리 갭 계수 a_r": ar,
+                  "필립스: 물가 관성 b_π": bpi, "필립스: 갭 계수 b_y": by, "오쿤 계수 θ": th,
+                  "IS 충격 표준편차": sd[0], "물가 충격 표준편차": sd[1], "잠재 GDP 충격 표준편차": sd[2],
+                  "λ_g(고정)": lam_g, "λ_z(고정)": lam_z, "중립금리의 성장률 계수 c(고정)": c,
+                  "잠재 GDP 수준 충격 표준편차 상한": sy_max,
+                  "표본": f"{idx[0]}~{idx[-1]}", "로그우도": ll}
+    est.notes = ["Laubach·Williams(2003) 준구조모형을 한국은행 권지호 외(2019)처럼 오쿤의 관계식을 더해 수정한 모형. "
+                 "IS곡선(실질금리 갭 → GDP 갭), 필립스곡선(GDP 갭 → 근원물가), 오쿤의 관계식(GDP 갭 → 실업률)을 상태공간모형으로 묶어 "
+                 "칼만 필터 최우추정 후 평활기로 잠재 GDP·잠재성장률·중립금리·자연실업률을 동시에 추정.",
+                 "실질금리 = 한국은행 기준금리 − 기대인플레이션(한국은행 소비자동향조사 향후 1년, 2002년 이전은 근원물가 상승률 직전 4분기 평균). "
+                 "물가는 농산물·석유류 제외 근원물가 전년동기비. 원논문의 전문가 5년 기대인플레이션 대신 일반인 1년 기대를 씀.",
+                 f"잠재성장률 충격과 중립금리 충격의 상대 크기(λ_g={lam_g:g}, λ_z={lam_z:g})는 고정. 값을 키우면 잠재성장률·중립금리가 더 자주 변함. "
+                 f"최우추정이 GDP 변동을 잠재 GDP 수준 충격으로 돌리는 경향이 있어 그 표준편차 상한을 {sy_max:g}%로 둠(상한을 높이면 잠재성장률이 출렁임)."]
+    est.extra = {"중립금리·자연실업률": pd.DataFrame({
+        "실질 기준금리(%)": r.reindex(idx), "중립금리 추정(%)": rstar, "잠재성장률(연율, %)": 4 * g,
+        "실업률(%)": u.reindex(idx), "자연실업률 추정(%)": ustar,
+        "근원물가 상승률(%)": pi.reindex(idx), "기대인플레이션(%)": pe.reindex(idx)})}
     return est
 
 
@@ -402,16 +469,234 @@ def svar(y: pd.Series, u: pd.Series, p: int = 4) -> Estimate:
 
 
 # ---------------------------------------------------------------------------
+# 생산함수모형
+# ---------------------------------------------------------------------------
+def _capital(df: pd.DataFrame, kind: str) -> tuple[pd.Series, str]:
+    has = lambda c: c in df.columns and df[c].notna().sum() > 40  # noqa: E731
+    if kind == "ksvc" and has("ksvc"):
+        return log100(df["ksvc"]), "자본서비스 물량지수(전산업, 연간 → 분기 Denton 보간)"
+    if has("capital"):
+        return log100(df["capital"]).shift(1), "실질 생산자본스톡(직전 분기말)"
+    return log100(df["ksvc"]), "자본서비스 물량지수"
+
+
+def _hours(df: pd.DataFrame) -> tuple[pd.Series, bool]:
+    if "hours" in df.columns and df["hours"].notna().sum() > 40:
+        return log100(df["hours"]), True
+    return pd.Series(0.0, index=df.index), False
+
+
+HOURS_NOTE = ("평균 근로시간: OECD 취업자 1인당 연간 실근로시간(2008년~), 그 이전은 Penn World Table 증가율로 연장하고, 당해 연도는 "
+              "사업체노동력조사 근로시간 증가율로 연장한 뒤 Denton 방식으로 분기화(한국은행 2024년은 경제활동인구조사 미시자료로 구성).")
+
+
+def pf(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, extend: int = 12,
+       nairu: pd.Series | None = None, capital: str = "ksvc", labour: str = "lfpr", cu_adjust: bool = True) -> Estimate:
+    """생산함수 접근 (한국은행 권지호 외 2019, 이은경 외 2024).
+
+      Y = A · L^s · K^(1-s)      (s: 노동소득분배율)
+      잠재 GDP = 총요소생산성 추세 + s·잠재노동 + (1-s)·자본서비스        (로그)
+      잠재노동 = 15세이상인구 × 경제활동참가율 추세 × (1−자연실업률) × 평균 근로시간 추세   (labour="lfpr", 2019년 방식)
+               = 15세이상인구 × 고용률 추세 × 평균 근로시간 추세                       (labour="emprate", 2024년 방식)
+      자본서비스 물량지수는 전부 추세로 간주(CBO 2001).
+      총요소생산성 = 솔로 잔차 (실제 노동 = 취업자 × 평균 근로시간). 추세는 ① HP → ② 순환을 자기 시차·가동률(현재·직전)에 회귀
+      → ③ 가동률 효과를 뺀 TFP → ④ 다시 HP (Chalaux·Guillemette 2019).
+    """
+    alpha = 1 - labshare
+    k, ksrc = _capital(df, capital)
+    lh, has_h = _hours(df)
+    d = pd.DataFrame({"gdp": df["gdp"], "emp": df["emp"], "lf": df["lf"], "pop15": df["pop15"],
+                      "urate": df["urate"], "k": k, "lh": lh}).dropna()
+    y = log100(d["gdp"])
+    k = d["k"]
+    pop = log100(d["pop15"])
+    l = log100(d["emp"]) + d["lh"]
+    tfp = y - alpha * k - labshare * l
+    tfp_adj, cu_info = tfp, "가동률 조정 없음"
+    if cu_adjust and "capu" in df.columns and df["capu"].reindex(d.index).notna().sum() > 40:
+        cyc = tfp - hp_series(tfp, lam, extend)
+        cu = df["capu"].reindex(d.index)
+        cu = cu - cu.mean()
+        R = pd.DataFrame({"c": cyc, "c1": cyc.shift(1), "cu": cu, "cu1": cu.shift(1)}).dropna()
+        X = np.column_stack([np.ones(len(R)), R["c1"], R["cu"], R["cu1"]])
+        b = np.linalg.lstsq(X, R["c"].to_numpy(), rcond=None)[0]
+        eff = (b[2] * cu + b[3] * cu.shift(1)).fillna(b[2] * cu).fillna(0)
+        tfp_adj = tfp - eff
+        cu_info = f"가동률 계수(현재 {b[2]:.3f}, 직전 {b[3]:.3f})"
+    tfp_t = hp_series(tfp_adj, lam, extend)
+    h_t = hp_series(d["lh"], lam, extend) if has_h else d["lh"]
+    comp_lab = {}
+    u_t = er_t = part_t = None
+    if labour == "emprate":
+        er = d["emp"] / d["pop15"] * 100
+        er_t = hp_series(er, lam, extend)
+        l_t = pop + log100(er_t / 100) + h_t
+        comp_lab["노동: 고용률"] = log100(er_t / 100)
+        nsrc = "고용률(취업자/15세이상인구)의 HP 추세"
+    else:
+        part = d["lf"] / d["pop15"] * 100
+        part_t = hp_series(part, lam, extend)
+        if nairu is None:
+            u_t = hp_series(d["urate"], lam * 4, extend)
+            nsrc = f"실업률의 HP 추세(λ={lam * 4:g})"
+        else:
+            u_t = nairu.reindex(d.index).interpolate(limit_direction="both")
+            nsrc = "필립스곡선을 넣은 모형의 자연실업률"
+        l_t = pop + log100(part_t / 100) + log100(1 - u_t / 100) + h_t
+        comp_lab["노동: 경제활동참가율"] = log100(part_t / 100)
+        comp_lab["노동: 1-자연실업률"] = log100(1 - u_t / 100)
+    ystar = tfp_t + alpha * k + labshare * l_t
+    est = _finish("pf", log100(df["gdp"]), ystar)
+    comp = pd.DataFrame({"총요소생산성": tfp_t.diff(4), "자본": alpha * k.diff(4),
+                         "노동: 15세이상인구": labshare * pop.diff(4)})
+    for name, s_ in comp_lab.items():
+        comp[name] = labshare * s_.diff(4)
+    comp["노동: 근로시간"] = labshare * h_t.diff(4)
+    comp["잠재성장률(로그 근사)"] = comp.sum(axis=1, min_count=len(comp.columns))
+    inputs = pd.DataFrame({"실제 TFP(로그×100)": tfp, "가동률 조정 TFP": tfp_adj, "추세 TFP": tfp_t,
+                           "자본투입(로그×100)": k, "실제 노동투입(로그×100)": l, "잠재노동(로그×100)": l_t,
+                           "경제활동참가율(%)": d["lf"] / d["pop15"] * 100,
+                           "고용률(%)": d["emp"] / d["pop15"] * 100,
+                           "실업률(%)": d["urate"]})
+    if has_h:
+        inputs["평균 근로시간(연간, 시간)"] = np.exp(d["lh"] / 100)
+        inputs["평균 근로시간 추세"] = np.exp(h_t / 100)
+    if labour == "emprate":
+        inputs["고용률 추세(%)"] = er_t
+    else:
+        inputs["경제활동참가율 추세(%)"] = part_t
+        inputs["자연실업률(%)"] = u_t
+    est.params = {"노동소득분배율": labshare, "HP λ": lam, "끝점 연장(분기)": extend, "자본투입": ksrc,
+                  "잠재노동 정의": "15세이상인구×고용률 추세×근로시간 추세" if labour == "emprate"
+                  else "15세이상인구×참가율 추세×(1-자연실업률)×근로시간 추세",
+                  "자연실업률·고용률": nsrc, "TFP 가동률 조정": cu_info}
+    lab_note = ("잠재노동 = 15세이상인구 × 고용률 추세 × 평균 근로시간 추세(한국은행 2024년 방식). " if labour == "emprate" else
+                f"잠재노동 = 15세이상인구 × 경제활동참가율 추세 × (1-자연실업률) × 평균 근로시간 추세(한국은행 2019년 방식). 자연실업률: {nsrc}. ")
+    est.notes = [f"콥-더글러스 생산함수 Y = A·L^s·K^(1-s), 노동소득분배율 s={labshare:g}(한국은행 2019년 논고와 같은 값). "
+                 "총요소생산성(TFP)은 솔로 잔차이며 실제 노동투입 = 취업자 × 평균 근로시간(총근로시간).",
+                 lab_note + "15세이상인구는 구조적 요인으로 보아 그대로 추세로 씀. 노동의 질(성·연령·학력 구성)은 미시자료가 필요해 넣지 않았고 "
+                 "그 효과는 TFP 에 섞여 있음.",
+                 f"자본투입: {ksrc}. 자본서비스는 자산별 생산자본스톡을 사용자비용으로 가중한 물량(한국은행 국민대차대조표, 전산업 연쇄 통크비스트)이며 "
+                 "전부 추세로 간주. 마지막 공표 연도 이후는 최근 3년 평균 증가율로 연장.",
+                 HOURS_NOTE if has_h else "근로시간 자료가 없어 취업자 수 기준으로 계산함.",
+                 f"TFP 추세: HP 필터 순환 부분 중 제조업 가동률(현재·직전 분기)로 설명되는 부분을 걷어낸 뒤 다시 HP 필터({cu_info})."]
+    est.extra = {"잠재성장률 기여도": comp, "생산함수 투입": inputs}
+    return est
+
+
+def _ar2_var(f1: float, f2: float) -> float:
+    """AR(2) 무조건 분산 / 충격 분산."""
+    den = (1 + f2) * ((1 - f2) ** 2 - f1 ** 2)
+    return float((1 - f2) / den) if den > 1e-6 else 1e6
+
+
+def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str = "2000Q1",
+         capital: str = "ksvc", rho_max: float = 0.9) -> Estimate:
+    """생산함수 다변량 필터 (한국은행 다변량필터링모형; 미 연준 Fleischman-Roberts 2011 의 수정형).
+
+    관측식 (모두 100·log, 갭 ỹ 는 AR(2))
+      y − (1-s)k − s·n = a* + s(p* + e* + h*) + ỹ + ε1          (생산함수: n=15세이상인구, k=자본서비스)
+      p  = p* + β_p ỹ + ε2      (경제활동참가율)
+      e  = e* + β_e ỹ + ε3      (고용률 = 1−실업률)
+      h  = h* + β_h ỹ + ε4      (평균 근로시간)
+      π  = b_π π_{-1} + (1−b_π) πᵉ + κ ỹ_{-1} + ε5    (필립스곡선)
+    상태식: a*·p*·h* 는 기울기가 확률보행하는 평활 추세(기울기 충격 = 해당 식 충격/√λ), e* 는 확률보행.
+    """
+    s = labshare
+    k, ksrc = _capital(df, capital)
+    lh, has_h = _hours(df)
+    pi = _inflation(df["core"])
+    pe = expected_inflation(df)
+    d = pd.DataFrame({"y": log100(df["gdp"]), "k": k, "n": log100(df["pop15"]),
+                      "p": log100(df["lf"] / df["pop15"]), "e": log100(1 - df["urate"] / 100), "h": lh,
+                      "pi": pi, "pi1": pi.shift(1), "pe": pe}).loc[start:].dropna()
+    n_ = len(d)
+    x1 = d["y"] - (1 - s) * d["k"] - s * d["n"]
+    Y = np.column_stack([x1, d["p"], d["e"], d["h"], d["pi"]])
+    if not has_h:
+        Y[:, 3] = np.nan
+    hp_p, hp_e, hp_h = (hp_array(d[c].to_numpy(), lam) for c in ("p", "e", "h"))
+    a_init = hp_array((x1 - s * (d["p"] + d["e"] + d["h"])).to_numpy(), lam)
+    m = 9
+    pi1, pev = d["pi1"].to_numpy(), d["pe"].to_numpy()
+
+    def build(x):
+        f1, f2, bp, be, bh, kap, bpi = x[:7]
+        sc, s1, sp, se, sh, spi, ses, sgp, sgh = np.exp(x[7:16])
+        T = np.zeros((m, m))
+        T[0, 0], T[0, 1], T[1, 0] = f1, f2, 1
+        T[2, 2] = T[2, 3] = T[3, 3] = 1
+        T[4, 4] = T[4, 5] = T[5, 5] = 1
+        T[6, 6] = 1
+        T[7, 7] = T[7, 8] = T[8, 8] = 1
+        g0 = _ar2_var(f1, f2) * sc ** 2                 # 갭의 무조건 분산
+        Q = np.diag([sc ** 2, 0, 0, g0 / lam, 0, sgp ** 2, ses ** 2, 0, sgh ** 2])
+        Z = np.zeros((5, m))
+        Z[0, 0], Z[0, 2], Z[0, 4], Z[0, 6], Z[0, 7] = 1, 1, s, s, s
+        Z[1, 4], Z[1, 0] = 1, bp
+        Z[2, 6], Z[2, 0] = 1, be
+        Z[3, 7], Z[3, 0] = 1, bh
+        Z[4, 1] = kap
+        D = np.zeros((n_, 5))
+        D[:, 4] = bpi * pi1 + (1 - bpi) * pev
+        H = np.diag([s1 ** 2, sp ** 2, se ** 2, sh ** 2, spi ** 2])
+        a0 = np.array([0, 0, a_init[0], a_init[1] - a_init[0], hp_p[0], hp_p[1] - hp_p[0], hp_e[0], hp_h[0],
+                       hp_h[1] - hp_h[0]])
+        P0 = np.diag([1.0, 1.0, 1.0, 0.2, 0.5, 0.05, 0.3, 0.5, 0.05]) ** 2
+        return SS.SSM(Z, D, H, T, np.zeros(m), Q, a0, P0)
+
+    def build_s(x):
+        if x[0] + x[1] >= rho_max or x[1] - x[0] >= 0.98:
+            raise ValueError
+        return build(x)
+
+    x0 = np.array([1.0, -0.2, 0.2, 0.2, 0.1, 0.1, 0.8] + list(np.log([0.6, 0.3, 0.3, 0.2, 0.5, 0.3, 0.1, 0.02, 0.02])))
+    bounds = ([(-0.5, 1.8), (-0.95, 0.5), (0.0, 1.5), (0.0, 1.5), (0.0, 1.5), (0.01, 1.0), (0.0, 0.99)] + [(-7, 2)] * 6 + [(-7, np.log(0.08))]
+              + [(np.log(0.002), np.log(0.04))] * 2)
+    xh, ll, _ = SS.fit(Y, build_s, x0, bounds)
+    st, _, _ = SS.ksmooth(Y, build(xh))
+    idx = d.index
+    S = lambda j: pd.Series(st[:, j], index=idx)  # noqa: E731
+    a_, p_, e_, h_ = S(2), S(4), S(6), S(7)
+    ystar = a_ + (1 - s) * d["k"] + s * (d["n"] + p_ + e_ + h_)
+    est = _finish("pfmv", log100(df["gdp"]), ystar)
+    comp = pd.DataFrame({"총요소생산성": a_.diff(4), "자본": (1 - s) * d["k"].diff(4),
+                         "노동: 15세이상인구": s * d["n"].diff(4), "노동: 경제활동참가율": s * p_.diff(4),
+                         "노동: 1-자연실업률": s * e_.diff(4), "노동: 근로시간": s * h_.diff(4)})
+    comp["잠재성장률(로그 근사)"] = comp.sum(axis=1, min_count=len(comp.columns))
+    f1, f2, bp, be, bh, kap, bpi = xh[:7]
+    sd = np.exp(xh[7:16])
+    est.params = {"노동소득분배율": s, "갭 AR(1)": f1, "갭 AR(2)": f2, "오쿤: 참가율 β_p": bp, "오쿤: 고용률 β_e": be,
+                  "오쿤: 근로시간 β_h": bh, "필립스: 갭 계수 κ": kap, "필립스: 물가 관성 b_π": bpi,
+                  "갭 충격 표준편차": sd[0], "고용률 추세 충격 표준편차": sd[6],
+                  "참가율 추세 기울기 충격 표준편차": sd[7], "근로시간 추세 기울기 충격 표준편차": sd[8],
+                  "TFP 추세 평활 λ": lam, "갭 지속성 상한(AR 계수 합)": rho_max,
+                  "자본투입": ksrc, "표본": f"{idx[0]}~{idx[-1]}", "로그우도": ll}
+    est.notes = ["한국은행 다변량필터링모형(권지호 외 2019; 미 연준 FRB/US 공급부문의 Fleischman·Roberts 2011 모형 수정형)을 따름. "
+                 "생산함수 접근과 같이 잠재 GDP = TFP 추세 + 노동소득분배율×(15세이상인구 + 참가율 추세 + 고용률 추세 + 근로시간 추세) "
+                 "+ 자본몫×자본서비스 이나, 투입요소별 추세·순환을 따로 HP 필터하지 않고 하나의 상태공간모형으로 동시에 추정(칼만 필터 최우추정).",
+                 "오쿤의 관계식: 경제활동참가율·고용률(1-실업률)·평균 근로시간의 순환 부분이 GDP 갭에 비례. 필립스곡선: 근원물가 상승률이 "
+                 "직전 분기 GDP 갭에 반응(기대인플레이션은 소비자동향조사 향후 1년, 2002년 이전은 근원물가 직전 4분기 평균).",
+                 f"TFP 추세 기울기 충격 분산은 GDP 갭 분산의 1/λ(λ={lam:g})로 고정해 HP 필터와 같은 평활도를 주고, 참가율·근로시간 추세의 기울기 충격은 "
+                 f"최우추정. 갭이 단위근에 가깝게 추정돼 추세 변화를 흡수하지 않도록 AR 계수 합을 {rho_max:g} 이하로 제한. "
+                 "원논문의 공급충격 변수와 노동의 질은 넣지 않음.",
+                 f"자본투입: {ksrc}(추세로 간주). " + (HOURS_NOTE if has_h else "근로시간 자료가 없어 근로시간 식은 뺌.")]
+    ustar = 100 * (1 - np.exp(e_ / 100))
+    est.extra = {"잠재성장률 기여도": comp,
+                 "자연실업률": pd.DataFrame({"실업률(%)": df["urate"].reindex(idx), "자연실업률 추정(%)": ustar,
+                                        "근원물가 상승률(%)": pi.reindex(idx)})}
+    return est
+
+
+# ---------------------------------------------------------------------------
 # 결합·지표
 # ---------------------------------------------------------------------------
-def ensemble(y: pd.Series, ests: list[Estimate]) -> Estimate:
+def ensemble(y: pd.Series, ests: list[Estimate], key: str = "avg", note: str | None = None) -> Estimate:
     G = pd.concat([e.gap for e in ests], axis=1)
     gap = G.mean(axis=1, skipna=True)
     tr = y - gap
-    e = Estimate("avg", "방법 평균", tr, gap,
-                 params={"포함 방법": ", ".join(x.name for x in ests)},
-                 notes=["선택한 방법들의 GDP 갭을 단순 평균하고, 잠재 GDP = 실제 GDP − 평균 갭 으로 계산."])
-    return e
+    return Estimate(key, AVG_KEYS[key], tr, gap, params={"포함 방법": ", ".join(x.name for x in ests)},
+                    notes=[note or "포함된 방법들의 GDP 갭을 단순 평균하고, 잠재 GDP = 실제 GDP − 평균 갭 으로 계산."])
 
 
 def yoy(x100: pd.Series) -> pd.Series:
