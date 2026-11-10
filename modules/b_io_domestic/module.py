@@ -85,7 +85,7 @@ def demand_tab(t: D.KrIO, level: str):
         st.session_state[key] = _preset_rows("수출 전반 10% 감소", level, labels, code2lab)
 
     st.markdown("##### 최종수요 충격")
-    c1, c2 = st.columns([3, 1])
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(DEMAND_PRESETS), key=f"{key}_preset")
     if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
         st.session_state[key] = _preset_rows(preset, level, labels, code2lab)

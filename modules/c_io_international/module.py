@@ -92,7 +92,7 @@ def demand_tab(t: I.ICIO, focus: str):
     copts = _country_opts(t, world=True)
     if key not in st.session_state:
         st.session_state[key] = DEMAND_PRESETS["중국 투자 5% 감소"]
-    c1, c2 = st.columns([3, 1])
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(DEMAND_PRESETS), key=f"{key}_preset")
     if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
         st.session_state[key] = DEMAND_PRESETS[preset]
@@ -184,7 +184,7 @@ def tariff_tab(t: I.ICIO, focus: str):
     st.session_state.setdefault("tar_exp", [_clab(I.WORLD)])
     st.session_state.setdefault("tar_ind", [GOODS])
     st.session_state.setdefault("tar_tau", 10.0)
-    c1, c2 = st.columns([3, 1])
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(TARIFF_PRESETS), key="tar_preset")
     c2.button("예시 불러오기", on_click=_apply_tariff_preset, width="stretch", key="tar_load")
     a, b, c = st.columns(3)
@@ -261,7 +261,7 @@ def supply_tab(t: I.ICIO, focus: str):
     clist = [c for c in _country_opts(t, groups=False, world=False)]
     if key not in st.session_state:
         st.session_state[key] = SUPPLY_PRESETS["대만 반도체·전자 생산 50% 차질"]
-    c1, c2 = st.columns([3, 1])
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(SUPPLY_PRESETS), key=f"{key}_preset")
     if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
         st.session_state[key] = [p for p in SUPPLY_PRESETS[preset] if p[1] in t.si]
@@ -330,7 +330,7 @@ def price_tab(t: I.ICIO, focus: str):
     copts = _country_opts(t, world=True)
     if key not in st.session_state:
         st.session_state[key] = PRICE_PRESETS["국제 에너지(원유·가스) 가격 30% 상승"]
-    c1, c2 = st.columns([3, 1])
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(PRICE_PRESETS), key=f"{key}_preset")
     if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
         st.session_state[key] = PRICE_PRESETS[preset]
