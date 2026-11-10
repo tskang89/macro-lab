@@ -12,6 +12,7 @@ from core.result import ExcelChart, Result
 from core.ui import excel_button, footer, notes_box, page_header, table
 from engines.potential import analysis as A
 from engines.potential import data as D
+from engines.potential import forecast as F
 from engines.potential import methods as M
 
 META = {"title": "잠재성장률 추정", "group": "성장 분석", "order": 10, "icon": ":material/trending_up:",
@@ -95,16 +96,64 @@ def _gname(k: str) -> str:
     return f"[{M.GROUP[k]}] {M.METHODS[k]}" if k in M.GROUP else M.AVG_KEYS.get(k, k)
 
 
+def _sq(df) -> str | None:
+    """분기 차트 음영 시작 라벨(첫 전망 분기)."""
+    p = F.first_forecast(df)
+    return D.label(p) if p is not None else None
+
+
+def _sa(df) -> str | None:
+    """연간 차트 음영 시작 라벨(전망 분기가 들어 있는 첫 해)."""
+    p = F.first_forecast(df)
+    return str(p.year) if p is not None else None
+
+
+def _fc_notes() -> list[str]:
+    info = st.session_state.get("pg_fc_info")
+    if not info:
+        return ["끝점 보정(전망 연장)을 쓰지 않음: 마지막 실적 분기까지의 자료로만 추정."]
+    fc = info["fc"]
+    how = ("발표된 분기 경로의 전년동기비를 그대로 맞추고, 분기 경로가 없는 반기는 반기 성장률(전년동기비)이 전망치가 되도록 두 분기에 "
+           "같은 전기비 성장을 줌" if info["mode"] == "yoy" else
+           "마지막 실적 분기 수준에 분기 경로의 전기비를 이어 붙이고, 그 뒤 반기는 반기 성장률 전망에 맞춤")
+    return [f"끝점 보정: {fc['title']} 전망으로 자료를 {fc['horizon']}까지 연장해 추정(한국은행 잠재성장률 추정 방식). "
+            f"실질 GDP 는 {how}.",
+            "생산함수·준구조모형 입력: 취업자 = 전년동기 + 취업자수 증감 전망, 실업률 = 반기 전망(계절조정), 경제활동인구 = 취업자/(1−실업률), "
+            "근원물가·소비자물가 = 분기 경로·반기 상승률 전망(한국은행 근원물가는 식료품·에너지 제외 기준이나 상승률을 농산물·석유류 제외 지수에 적용), "
+            "15세 이상 인구·평균 근로시간·자본서비스·자본스톡 = 최근 3년 평균 증가율로 추세 연장, 가동률 = 최근 4분기 평균, "
+            "기준금리·기대인플레이션 = 마지막 값 유지.",
+            "전망 구간(차트 음영, 표의 '전망')의 잠재성장률·GDP 갭은 전망을 전제로 한 값. 연간 표의 '실제 성장률'도 전망 포함 연도는 전망치."]
+
+
 # ---------------------------------------------------------------------------
 # 설정
 # ---------------------------------------------------------------------------
 def _data_source():
-    src = st.radio("자료", ["한국 (ECOS)", "직접 올리기 (다른 나라·다른 자료)"], horizontal=True, key="pg_src")
+    st.session_state["pg_fc_info"] = None
+    src =st.radio("자료", ["한국 (ECOS)", "직접 올리기 (다른 나라·다른 자료)"], horizontal=True, key="pg_src")
     if src.startswith("한국"):
         df, meta = D.load_korea()
         st.caption(f"실질 GDP {meta['last_gdp']}까지 · 자본서비스·자본스톡 {meta.get('ksvc_last_year', meta['capital_last_year'])}년까지 공표분 · "
                    f"근로시간 {meta.get('hours_current_year', '')} · 자료 갱신 {meta['built']}")
-        return df, "KR", SOURCES_KR
+        fc = F.load_bok()
+        if fc is None:
+            return df, "KR", SOURCES_KR
+        c1, c2 = st.columns([1, 1])
+        on = c1.toggle(f"끝점 보정: 한국은행 전망으로 {D.label(pd.Period(fc['horizon'], freq='Q'))}까지 연장", value=True,
+                       key="pg_fc_on",
+                       help=f"{fc['title']}의 GDP 성장률(분기 경로·반기·연간)로 실질 GDP 를 연장하고, 생산함수·준구조모형 입력 변수도 "
+                            "전망(취업자·실업률·물가) 또는 추세 연장으로 같은 시계에 맞춘 뒤 추정합니다(한국은행 잠재성장률 추정 방식). "
+                            "필터가 최근 자료에 끌려가는 끝점 문제를 줄입니다.")
+        mode = c2.radio("GDP 연장 방식", ["yoy", "qoq"], horizontal=True, key="pg_fc_mode", disabled=not on,
+                        format_func=lambda x: "전년동기비 전망 그대로" if x == "yoy" else "전기비 경로를 실적에 이어 붙임",
+                        help="전년동기비: 발표된 분기·반기·연간 성장률을 그대로 재현. 전기비: 마지막 실적 수준에서 전망 경로의 전기비 "
+                             "성장을 이어 붙여, 전망 이후 실적이 예상과 달라진 만큼의 수준 차이가 남습니다.")
+        if not on:
+            return df, "KR", SOURCES_KR
+        dfx, how = F.extend(df, fc, mode)
+        st.session_state["pg_fc_info"] = {"fc": fc, "how": how, "cmp": F.compare(dfx, fc), "mode": mode}
+        return dfx, f"KR_fc_{fc['published']}_{mode}", SOURCES_KR + [
+            f"{fc['title']} — {fc['pages']} ({fc['url']})"]
     up = st.file_uploader("분기 자료 CSV·엑셀", type=["csv", "xlsx"], key="pg_upload",
                           help="첫 열은 분기(2024Q1 형식), 다음 열 이름: gdp(필수, 계절조정 실질), urate, core, emp, lf, pop15, "
                                "hours, ksvc, capital, capu, rate, pie")
@@ -258,7 +307,8 @@ def _cards(df, ests):
     pots = {k: v for k, v in L["pots"].items() if not k.startswith("avg") and np.isfinite(v)}
     ga, _ = A.annual_tables(df, ests, str(df.index[0]))
     ga = ga.set_index("연도")
-    full = ga.index[ga["실제 성장률"].notna()][-1] if ga["실제 성장률"].notna().any() else None
+    act = ga["실제 성장률"].notna() & (ga["구분"] == "실적")
+    full = ga.index[act][-1] if act.any() else None
     cols = st.columns(5)
     cols[0].metric(f"실제 성장률 ({lab}, 전년동기비)", f"{L['actual_yoy']:.2f}%")
     if "avg" in ests:
@@ -278,6 +328,22 @@ def _cards(df, ests):
                 nm = ests[k].name
                 col.metric(f"{full}년 잠재성장률 · {nm}", f"{ga.loc[full, nm]:.2f}%",
                            help=f"{lab} GDP 갭 {L['gaps'][k]:+.2f}%")
+        fys = [y for y in ga.index if ga.loc[y, "구분"] != "실적" and pd.notna(ga.loc[y, "방법 평균"])]
+        if fys:
+            _, gpa = A.annual_tables(df, ests, str(df.index[0]))
+            gpa = gpa.set_index("연도")
+            fc = (st.session_state.get("pg_fc_info") or {}).get("fc", {})
+            bok = fc.get("gdp", {}).get("a_yoy", {})
+            fcols = st.columns(2 * len(fys))
+            for i, y in enumerate(fys):
+                row = ga.loc[y, [ests[k].name for k in ests if not k.startswith("avg") and ests[k].name in ga.columns]].dropna()
+                grp = " · ".join(f"{ests[k].name.replace(' 평균', '')} {ga.loc[y, ests[k].name]:.2f}"
+                                 for k in ("avg_stat", "avg_semi", "avg_pf") if k in ests)
+                fcols[2 * i].metric(f"{y}년 잠재성장률 (전망 반영)", f"{ga.loc[y, '방법 평균']:.2f}%",
+                                    help=f"방법 간 {row.min():.2f} ~ {row.max():.2f}% · {grp}")
+                fcols[2 * i + 1].metric(f"{y}년 GDP 갭 (전망 반영)", f"{gpa.loc[y, '방법 평균']:+.2f}%",
+                                        help=f"성장률 {ga.loc[y, '실제 성장률']:.2f}%"
+                                             + (f" (한국은행 전망 {bok[str(y)]:.1f}%)" if str(y) in bok else ""))
     else:
         e = next(iter(ests.values()))
         cols[1].metric(f"잠재성장률 ({lab})", f"{L['pots'][e.key]:.2f}%")
@@ -311,13 +377,13 @@ def compare_tab(df, ests, cfg, show, sources):
     ga, gpa = A.annual_tables(df, ests, show)
     band = ("최소", "최대") if len(names) >= 2 else None
     if basis.startswith("분기"):
-        step, x = _step_q(len(g)), "라벨"
+        step, x, sh = _step_q(len(g)), "라벨", _sq(df)
         gtab, ptab = g.copy(), gap.copy()
         if band:
             gtab["최소"], gtab["최대"] = g[names].min(axis=1), g[names].max(axis=1)
             ptab["최소"], ptab["최대"] = gap[names].min(axis=1), gap[names].max(axis=1)
     else:
-        step, x = _step_a(len(ga)), "연도"
+        step, x, sh = _step_a(len(ga)), "연도", _sa(df)
         gtab = ga.assign(연도=ga["연도"].astype(str))
         ptab = gpa.assign(연도=gpa["연도"].astype(str))
         if band:
@@ -325,12 +391,12 @@ def compare_tab(df, ests, cfg, show, sources):
             ptab["최소"], ptab["최대"] = gpa[names].min(axis=1), gpa[names].max(axis=1)
     rng = "음영: 표시 방법 간 최소~최대" if band else ""
     st.plotly_chart(charts.ts_lines(gtab, x, ["실제 성장률"] + lines, "실제 성장률과 잠재성장률", "%", 440, step,
-                                    emphasize=emph, dashed=("실제 성장률",), band=band), width="stretch")
+                                    emphasize=emph, dashed=("실제 성장률",), band=band, shade=sh), width="stretch")
     st.plotly_chart(charts.ts_lines(ptab, x, lines, "GDP 갭 (실제 GDP 가 잠재 GDP 를 웃도는 정도)", "%", 400, step,
-                                    emphasize=emph, band=band), width="stretch")
+                                    emphasize=emph, band=band, shade=sh), width="stretch")
     if rng:
         st.caption(rng)
-    order = ["연도", "실제 성장률"] + [ests[k].name for k in base] + [ests[k].name for k in gavg] + ([avg] if avg else [])
+    order = ["연도", "구분", "실제 성장률"] + [ests[k].name for k in base] + [ests[k].name for k in gavg] + ([avg] if avg else [])
     ga, gpa = ga[[c for c in order if c in ga.columns]], gpa[[c for c in order if c in gpa.columns and c != "실제 성장률"]]
     st.markdown("**연간 잠재성장률 (%)**")
     table(ga.assign(연도=ga["연도"].astype(str)))
@@ -338,8 +404,9 @@ def compare_tab(df, ests, cfg, show, sources):
     table(gpa.assign(연도=gpa["연도"].astype(str)))
     per = _period_table(df, ests)
     if per is not None:
-        per = per[[c for c in ["기간"] + order[1:] if c in per.columns]]
-        st.markdown("**기간별 연평균 잠재성장률 (%)** — 한국은행 발표 방식(5년 평균)과 비교용")
+        per = per[[c for c in ["기간"] + order[2:] if c in per.columns]]
+        st.markdown("**기간별 연평균 잠재성장률 (%)** — 한국은행 발표 방식(5년 평균)과 비교용"
+                    + (" · e) 전망 포함 연도가 들어간 기간" if _sa(df) else ""))
         table(per)
     qskip = _step_q(len(g))
     ex_lines = [ests[k].name for k in gavg] + ([avg] if avg else []) if gavg else names[:6]
@@ -352,7 +419,7 @@ def compare_tab(df, ests, cfg, show, sources):
         module=MODULE, analysis="방법 비교", inputs=_inputs(cfg, show),
         summary=_summary(df, ests),
         tables=tables,
-        notes=COMMON_NOTES + [f"[{e.name}] " + " ".join(e.notes) for e in ests.values()],
+        notes=COMMON_NOTES + _fc_notes() + [f"[{e.name}] " + " ".join(e.notes) for e in ests.values()],
         sources=sources,
         charts=[ExcelChart("분기 GDP갭", "라벨", ex_lines, "GDP 갭 (%)", kind="line", top=None, label_skip=qskip),
                 ExcelChart("분기 잠재성장률(전년동기비)", "라벨", ["실제 성장률"] + ex_lines, "실제·잠재성장률 (전년동기비, %)",
@@ -388,10 +455,11 @@ def _period_table(df, ests) -> pd.DataFrame | None:
     t = t[t["실제 성장률"].notna()]
     if len(t) < 5:
         return None
+    fy = A.fc_years(df)
     rows = []
     for s_, e_ in _bins(t.index):
-        r = t.loc[s_:e_].mean()
-        r.name = _plabel(s_, e_)
+        r = t.loc[s_:e_].drop(columns=["구분"]).mean()
+        r.name = _plabel(s_, e_) + ("e)" if any(y in fy for y in range(s_, e_ + 1)) else "")
         rows.append(r)
     out = pd.DataFrame(rows).round(2)
     out.index.name = "기간"
@@ -422,7 +490,7 @@ def detail_tab(df, ests, cfg, show, sources):
     cols = st.columns(4)
     cols[0].metric(f"잠재성장률 ({lab})", f"{L['pots'][k]:.2f}%")
     cols[1].metric(f"GDP 갭 ({lab})", f"{L['gaps'][k]:+.2f}%")
-    an = a.dropna(subset=["실제 성장률(%)"])
+    an = a[a["구분"] == "실적"].dropna(subset=["실제 성장률(%)"])
     if len(an):
         last = an.iloc[-1]
         cols[2].metric(f"{int(last['연도'])}년 잠재성장률", f"{last['잠재성장률(%)']:.2f}%")
@@ -430,12 +498,12 @@ def detail_tab(df, ests, cfg, show, sources):
     c1, c2 = st.columns(2)
     c1.plotly_chart(charts.ts_lines(q, "라벨", ["실제 성장률(전년동기비, %)", "잠재성장률(전년동기비, %)"],
                                     "실제 성장률과 잠재성장률 (전년동기비)", "%", 400, step,
-                                    dashed=("실제 성장률(전년동기비, %)",)), width="stretch")
-    c2.plotly_chart(charts.ts_bar_line(q, "라벨", "GDP 갭(%)", [], "GDP 갭", "%", 400, step), width="stretch")
+                                    dashed=("실제 성장률(전년동기비, %)",), shade=_sq(df)), width="stretch")
+    c2.plotly_chart(charts.ts_bar_line(q, "라벨", "GDP 갭(%)", [], "GDP 갭", "%", 400, step, shade=_sq(df)), width="stretch")
     ac = a.assign(연도=a["연도"].astype(str))
     st.plotly_chart(charts.ts_lines(ac, "연도", ["실제 성장률(%)", "잠재성장률(%)", "GDP 갭(연평균, %)"],
                                     "연간 실제 성장률·잠재성장률·GDP 갭", "%", 380, _step_a(len(ac)),
-                                    dashed=("실제 성장률(%)",)), width="stretch")
+                                    dashed=("실제 성장률(%)",), shade=_sa(df)), width="stretch")
     with st.expander("연간·분기 표", expanded=False):
         table(ac)
         table(q.drop(columns=["라벨"]))
@@ -450,7 +518,7 @@ def detail_tab(df, ests, cfg, show, sources):
         tables[name] = _qframe(t, show) if isinstance(t.index, pd.PeriodIndex) else t
     res = Result(module=MODULE, analysis=e.name, inputs=_inputs(cfg, show),
                  summary={f"잠재성장률 {lab}(%)": L["pots"][k], f"GDP 갭 {lab}(%)": L["gaps"][k]},
-                 tables=tables, notes=COMMON_NOTES + e.notes, sources=sources,
+                 tables=tables, notes=COMMON_NOTES + _fc_notes() + e.notes, sources=sources,
                  charts=[ExcelChart("분기", "라벨", ["실제 성장률(전년동기비, %)", "잠재성장률(전년동기비, %)"],
                                     "실제·잠재성장률 (전년동기비, %)", kind="line", top=None, label_skip=step),
                          ExcelChart("분기", "라벨", ["GDP 갭(%)"], "GDP 갭 (%)", kind="col", top=None, label_skip=step),
@@ -496,14 +564,14 @@ def pf_tab(df, ests, cfg, show, sources):
     ann = ann.reset_index()
     ann["연도"] = ann["연도"].astype(str)
     st.plotly_chart(charts.ts_stacked(ann, "연도", parts, "잠재성장률(로그 근사)", f"잠재성장률 기여도 (연평균, %p) — {label_}",
-                                      "%p", 440, _step_a(len(ann))), width="stretch")
-    per = _period_contrib(comp, parts)
+                                      "%p", 440, _step_a(len(ann)), shade=_sa(df)), width="stretch")
+    per = _period_contrib(comp, parts, A.fc_years(df))
     if per is not None:
         st.plotly_chart(charts.ts_stacked(per, "기간", parts, "잠재성장률(로그 근사)", "기간별 기여도 (연평균, %p)", "%p", 380, 1),
                         width="stretch")
     qc = _qframe(comp, show)
     st.plotly_chart(charts.ts_stacked(qc, "라벨", parts, "잠재성장률(로그 근사)", "잠재성장률 기여도 (분기, 전년동기비, %p)",
-                                      "%p", 420, _step_q(len(qc))), width="stretch")
+                                      "%p", 420, _step_q(len(qc)), shade=_sq(df)), width="stretch")
     tables = {"연간 기여도": ann}
     if per is not None:
         tables["기간별 기여도"] = per
@@ -514,23 +582,23 @@ def pf_tab(df, ests, cfg, show, sources):
         c1, c2 = st.columns(2)
         if "경제활동참가율 추세(%)" in inp:
             c1.plotly_chart(charts.ts_lines(inp, "라벨", ["경제활동참가율(%)", "경제활동참가율 추세(%)"], "경제활동참가율", "%", 320,
-                                            stp, zero=False), width="stretch")
+                                            stp, zero=False, shade=_sq(df)), width="stretch")
             c2.plotly_chart(charts.ts_lines(inp, "라벨", ["실업률(%)", "자연실업률(%)"], "실업률과 자연실업률", "%", 320, stp,
-                                            zero=False), width="stretch")
+                                            zero=False, shade=_sq(df)), width="stretch")
         else:
             c1.plotly_chart(charts.ts_lines(inp, "라벨", ["고용률(%)", "고용률 추세(%)"], "고용률(취업자/15세이상인구)", "%", 320,
-                                            stp, zero=False), width="stretch")
-            c2.plotly_chart(charts.ts_lines(inp, "라벨", ["실업률(%)"], "실업률", "%", 320, stp, zero=False), width="stretch")
+                                            stp, zero=False, shade=_sq(df)), width="stretch")
+            c2.plotly_chart(charts.ts_lines(inp, "라벨", ["실업률(%)"], "실업률", "%", 320, stp, zero=False, shade=_sq(df)), width="stretch")
         c3, c4 = st.columns(2)
         if "평균 근로시간 추세" in inp:
             c3.plotly_chart(charts.ts_lines(inp, "라벨", ["평균 근로시간(연간, 시간)", "평균 근로시간 추세"],
-                                            "취업자 1인당 연간 근로시간", "시간", 320, stp, zero=False), width="stretch")
+                                            "취업자 1인당 연간 근로시간", "시간", 320, stp, zero=False, shade=_sq(df)), width="stretch")
         c4.plotly_chart(charts.ts_lines(inp, "라벨", ["실제 TFP(로그×100)", "가동률 조정 TFP", "추세 TFP"],
-                                        "총요소생산성 (로그×100)", "", 320, stp, zero=False), width="stretch")
+                                        "총요소생산성 (로그×100)", "", 320, stp, zero=False, shade=_sq(df)), width="stretch")
         kg = _capital_growth(df, show)
         if kg is not None:
             st.plotly_chart(charts.ts_lines(kg, "연도", list(kg.columns[1:]), "자본서비스와 생산자본스톡 증가율 (연간)", "%", 320,
-                                            _step_a(len(kg))), width="stretch")
+                                            _step_a(len(kg)), shade=_sa(df)), width="stretch")
             tables["자본 증가율"] = kg
         tables["생산함수 투입"] = inp
     st.markdown("**연간 기여도 (%p)**")
@@ -539,14 +607,14 @@ def pf_tab(df, ests, cfg, show, sources):
                  summary={f"{r['연도']}년 {c}(%p)": r[c] for _, r in ann.tail(1).iterrows()
                           for c in parts + ["잠재성장률(로그 근사)"]},
                  tables=tables,
-                 notes=COMMON_NOTES + e_notes + ["기여도는 로그 차분(전년동기비)이라 합이 잠재성장률의 근사치이며, 연간은 4개 분기 평균."],
+                 notes=COMMON_NOTES + _fc_notes() + e_notes + ["기여도는 로그 차분(전년동기비)이라 합이 잠재성장률의 근사치이며, 연간은 4개 분기 평균."],
                  sources=sources,
                  charts=[ExcelChart("연간 기여도", "연도", parts, "잠재성장률 기여도 (%p)", kind="col", top=None)])
     excel_button(res, "pg_x_pf")
     notes_box(res)
 
 
-def _period_contrib(comp: pd.DataFrame, parts: list[str]) -> pd.DataFrame | None:
+def _period_contrib(comp: pd.DataFrame, parts: list[str], fy=frozenset()) -> pd.DataFrame | None:
     a = comp.groupby(comp.index.year).mean()
     a = a[comp.groupby(comp.index.year)["자본"].count() == 4].dropna()
     if len(a) < 5:
@@ -554,7 +622,7 @@ def _period_contrib(comp: pd.DataFrame, parts: list[str]) -> pd.DataFrame | None
     rows = []
     for s_, e_ in _bins(a.index):
         r = a.loc[s_:e_, parts + ["잠재성장률(로그 근사)"]].mean()
-        r.name = _plabel(s_, e_)
+        r.name = _plabel(s_, e_) + ("e)" if any(y in fy for y in range(s_, e_ + 1)) else "")
         rows.append(r)
     out = pd.DataFrame(rows).round(2)
     out.index.name = "기간"
@@ -594,41 +662,64 @@ def nairu_tab(df, ests, cfg, show, sources):
     step = _step_q(len(t))
     c1, c2 = st.columns(2)
     c1.plotly_chart(charts.ts_lines(t, "라벨", ["실업률(%)", "자연실업률 추정(%)"], "실업률과 자연실업률", "%", 380, step,
-                                    zero=False), width="stretch")
-    c2.plotly_chart(charts.ts_lines(t, "라벨", ["GDP 갭(%)", "실업률 갭(%p)"], "GDP 갭과 실업률 갭 (오쿤의 관계식)", "%", 380, step),
+                                    zero=False, shade=_sq(df)), width="stretch")
+    c2.plotly_chart(charts.ts_lines(t, "라벨", ["GDP 갭(%)", "실업률 갭(%p)"], "GDP 갭과 실업률 갭 (오쿤의 관계식)", "%", 380, step, shade=_sq(df)),
                     width="stretch")
     st.plotly_chart(charts.ts_lines(t, "라벨", ["근원물가 상승률(%)", "GDP 갭(%)"], "근원물가 상승률과 GDP 갭 (필립스곡선)", "%",
-                                    380, step), width="stretch")
+                                    380, step, shade=_sq(df)), width="stretch")
     charts_x = [ExcelChart("자연실업률", "라벨", ["실업률(%)", "자연실업률 추정(%)"], "실업률과 자연실업률 (%)",
                            kind="line", top=None, label_skip=step)]
-    summ = {f"자연실업률 {t['라벨'].iloc[-1]}(%)": t["자연실업률 추정(%)"].iloc[-1],
-            f"실업률 갭 {t['라벨'].iloc[-1]}(%p)": t["실업률 갭(%p)"].iloc[-1]}
+    la = D.label(F.last_actual(df))
+    r_ = t[t["라벨"] == la].iloc[-1] if (t["라벨"] == la).any() else t.iloc[-1]
+    summ = {f"자연실업률 {r_['라벨']}(%)": r_["자연실업률 추정(%)"], f"실업률 갭 {r_['라벨']}(%p)": r_["실업률 갭(%p)"]}
     if k == "lw":
         st.plotly_chart(charts.ts_lines(t, "라벨", ["실질 기준금리(%)", "중립금리 추정(%)", "잠재성장률(연율, %)"],
-                                        "실질 기준금리와 중립금리 (LW형 준구조모형)", "%", 380, step), width="stretch")
+                                        "실질 기준금리와 중립금리 (LW형 준구조모형)", "%", 380, step,
+                                        shade=_sq(df)), width="stretch")
         st.caption("실질 기준금리 = 기준금리 − 기대인플레이션. 중립금리 = 잠재성장률(연율) + 기타 요인(z). "
                    "실질금리가 중립금리보다 높으면 긴축적, 낮으면 완화적.")
         charts_x.append(ExcelChart("자연실업률", "라벨", ["실질 기준금리(%)", "중립금리 추정(%)"], "실질 기준금리와 중립금리 (%)",
                                    kind="line", top=None, label_skip=step))
-        summ[f"중립금리 {t['라벨'].iloc[-1]}(%)"] = t["중립금리 추정(%)"].iloc[-1]
+        summ[f"중립금리 {r_['라벨']}(%)"] = r_["중립금리 추정(%)"]
     table(_params_table({k: e}).drop(columns=["방법"]))
     res = Result(module=MODULE, analysis=f"자연실업률·중립금리 ({e.name})", inputs=_inputs(cfg, show), summary=summ,
-                 tables={"자연실업률": t, "모수": _params_table({k: e})}, notes=COMMON_NOTES + e.notes, sources=sources,
+                 tables={"자연실업률": t, "모수": _params_table({k: e})}, notes=COMMON_NOTES + _fc_notes() + e.notes, sources=sources,
                  charts=charts_x)
     excel_button(res, f"pg_x_nairu_{k}")
     notes_box(res)
 
 
 def data_tab(df, show, sources):
-    t = _qframe(df, show).rename(columns=D.COLUMNS)
-    cols = [c for c in t.columns if c not in ("분기", "라벨")]
+    t = _qframe(df.drop(columns=[F.FC_COL], errors="ignore"), show).rename(columns=D.COLUMNS)
+    if F.FC_COL in df.columns:
+        t.insert(2, "구분", ["전망" if v else "실적" for v in df[F.FC_COL].loc[show:].to_numpy()])
+    cols = [c for c in t.columns if c not in ("분기", "라벨", "구분")]
     pick = st.selectbox("그래프로 볼 자료", cols, key="pg_data_pick")
-    st.plotly_chart(charts.ts_lines(t, "라벨", [pick], pick, "", 360, _step_q(len(t)), zero=False), width="stretch")
+    st.plotly_chart(charts.ts_lines(t, "라벨", [pick], pick, "", 360, _step_q(len(t)), zero=False, shade=_sq(df)),
+                    width="stretch")
+    tables = {"분기 자료": t}
+    info = st.session_state.get("pg_fc_info")
+    if info:
+        fc = info["fc"]
+        st.markdown(f"**끝점 보정에 쓴 전망·가정** — {fc['title']} ({fc['published']} 발표)")
+        cmp_ = info["cmp"]
+        if len(cmp_):
+            st.caption("실질 GDP 성장률: 한국은행 전망과 연장 경로 비교(전년동기비). 실적이 이미 나온 분기는 실적을 씀.")
+            table(cmp_)
+            tables["GDP 전망 비교"] = cmp_
+        how = info["how"].copy()
+        how.insert(0, "라벨", [D.label(p) for p in how.index])
+        how.insert(0, "분기", how.index.astype(str))
+        st.caption("분기별 연장 방법")
+        table(how.reset_index(drop=True))
+        tables["연장 방법"] = how.reset_index(drop=True)
+        st.caption(f"출처: {fc['url']} ({fc['pages']})")
     table(t.drop(columns=["라벨"]))
-    res = Result(module=MODULE, analysis="입력 자료", tables={"분기 자료": t}, sources=sources,
+    res = Result(module=MODULE, analysis="입력 자료", tables=tables, sources=sources,
                  notes=["자본스톡은 연말 잔액을 분기말로 로그 선형 보간(마지막 공표 연도 이후는 최근 3년 평균 증가율로 연장).",
                         "자본서비스 물량지수와 평균 근로시간은 연간 자료를 Denton 방식(분기 평균 = 연간값, 분기 간 변화 최소)으로 분기화.",
-                        "평균 근로시간은 OECD(2008년~)에 Penn World Table 증가율을 거슬러 이었고, 당해 연도는 사업체노동력조사 증가율로 연장."])
+                        "평균 근로시간은 OECD(2008년~)에 Penn World Table 증가율을 거슬러 이었고, 당해 연도는 사업체노동력조사 증가율로 연장."]
+                 + _fc_notes())
     excel_button(res, "pg_x_data")
     for s in sources:
         st.caption(s)
@@ -644,6 +735,13 @@ def help_tab():
         "'물가를 자극하지 않는 산출'이라는 잠재 GDP 정의에 가깝게 갭을 구함.\n"
         "- **생산함수모형**: 잠재 GDP 를 총요소생산성·노동·자본의 잠재 수준으로 구성. 잠재성장률을 요인별로 분해할 수 있음. "
         "노동은 15세이상인구·경제활동참가율·자연실업률·평균 근로시간, 자본은 자본서비스 물량을 씀.")
+    st.markdown("**끝점 보정(한국은행 전망 연장)**  \n"
+                "HP 필터·칼만 평활기 등은 표본 끝에서 최근 실적에 끌려가 추세가 흔들립니다(끝점 문제). 한국은행은 자체 GDP 전망으로 "
+                "자료를 연장한 뒤 잠재성장률을 추정합니다. 이 도구도 한국은행 경제전망보고서의 분기 경로·반기(상반·하반, 전년동기비)·"
+                "연간 성장률로 실질 GDP 를 전망 시계 끝(다음 해 4분기)까지 연장하고, 생산함수·준구조모형의 입력 변수도 같은 시계로 맞춥니다: "
+                "취업자·실업률·물가는 전망치, 15세 이상 인구·근로시간·자본서비스는 최근 3년 추세 연장, 가동률은 최근 평균, "
+                "기준금리·기대인플레이션은 마지막 값 유지. 전망 구간은 차트에 음영으로, 표에 '전망'으로 표시합니다. "
+                "새 경제전망(2·5·8·11월)이 나오면 전망 숫자를 바꿔 다시 추정합니다.")
     rows = [{"분류": M.GROUP[k], "방법": M.METHODS[k], "아이디어": i, "장점": p, "한계": c} for k, (i, p, c) in HELP.items()]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=470)
     st.markdown("**한국은행 방식과의 차이**  \n"

@@ -253,6 +253,18 @@ def uc(y: pd.Series) -> Estimate:
 # ---------------------------------------------------------------------------
 # 준구조모형
 # ---------------------------------------------------------------------------
+def _n_fit(idx: pd.PeriodIndex, fit_end: str | None) -> int:
+    """모수 추정에 쓸 관측 수: fit_end(마지막 실적 분기)까지. 그 뒤 전망 구간은 평활에만 씀."""
+    if fit_end is None:
+        return len(idx)
+    return int((idx <= pd.Period(fit_end, freq="Q")).sum())
+
+
+def _sample(idx: pd.PeriodIndex, nf: int) -> str:
+    s = f"{idx[0]}~{idx[nf - 1]}"
+    return s if nf == len(idx) else s + f" (모수 추정), {idx[nf]}~{idx[-1]} 전망 구간은 평활에만 사용"
+
+
 def _inflation(core: pd.Series) -> pd.Series:
     return (core / core.shift(4) - 1) * 100
 
@@ -331,7 +343,7 @@ def expected_inflation(df: pd.DataFrame) -> pd.Series:
 
 
 def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: float = 0.03, c: float = 1.0,
-       sy_max: float = 0.25) -> Estimate:
+       sy_max: float = 0.25, fit_end: str | None = None) -> Estimate:
     """Laubach-Williams(2003)형 준구조모형 (한국은행 권지호 외 2019 준구조모형).
 
       IS곡선     ỹ_t = a1 ỹ_{t-1} + a2 ỹ_{t-2} + (a_r/2) Σ_{j=1,2} (r_{t-j} − r*_{t-j}) + ε1
@@ -351,10 +363,11 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
     d = pd.DataFrame({"y": y, "y1": y.shift(1), "y2": y.shift(2), "r1": r.shift(1), "r2": r.shift(2),
                       "pi": pi, "pi1": pi.shift(1), "pe": pe, "u": u}).loc[start:].dropna()
     Y = d[["y", "pi", "u"]].to_numpy()
-    hp_y = hp_array(d["y"].to_numpy(), 1600)
+    nf = _n_fit(d.index, fit_end)
+    hp_y = hp_array(d["y"].to_numpy()[:nf], 1600)
     g0 = float(np.mean(np.diff(hp_y[:8])))
     z0 = float(d["r1"].iloc[:8].mean() - c * 4 * g0)
-    us0 = float(hp_array(d["u"].to_numpy(), 6400)[0])
+    us0 = float(hp_array(d["u"].to_numpy()[:nf], 6400)[0])
     m = 10
     y1, y2, r1, r2 = (d[c_].to_numpy() for c_ in ("y1", "y2", "r1", "r2"))
     pi1, pev, yv = d["pi1"].to_numpy(), d["pe"].to_numpy(), d["y"].to_numpy()
@@ -401,7 +414,7 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                    np.log(0.1)])
     bounds = ([(-0.5, 1.7), (-0.95, 0.5), (-1.0, -0.0025), (0.0, 0.99), (0.025, 1.0), (0.01, 1.0)] + [(-6, 2)] * 2
               + [(-6, np.log(sy_max))] + [(-6, 2)] * 2)
-    xh, ll, _ = SS.fit(Y, build_s, x0, bounds)
+    xh, ll, _ = SS.fit(Y[:nf], build_s, x0, bounds)
     st, _, _ = SS.ksmooth(Y, build(xh))
     idx = d.index
     ystar = pd.Series(st[:, 0], index=idx)
@@ -416,7 +429,7 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                   "IS 충격 표준편차": sd[0], "물가 충격 표준편차": sd[1], "잠재 GDP 충격 표준편차": sd[2],
                   "λ_g(고정)": lam_g, "λ_z(고정)": lam_z, "중립금리의 성장률 계수 c(고정)": c,
                   "잠재 GDP 수준 충격 표준편차 상한": sy_max,
-                  "표본": f"{idx[0]}~{idx[-1]}", "로그우도": ll}
+                  "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["Laubach·Williams(2003) 준구조모형을 한국은행 권지호 외(2019)처럼 오쿤의 관계식을 더해 수정한 모형. "
                  "IS곡선(실질금리 갭 → GDP 갭), 필립스곡선(GDP 갭 → 근원물가), 오쿤의 관계식(GDP 갭 → 실업률)을 상태공간모형으로 묶어 "
                  "칼만 필터 최우추정 후 평활기로 잠재 GDP·잠재성장률·중립금리·자연실업률을 동시에 추정.",
@@ -591,7 +604,7 @@ def _ar2_var(f1: float, f2: float) -> float:
 
 
 def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str = "2000Q1",
-         capital: str = "ksvc", rho_max: float = 0.9) -> Estimate:
+         capital: str = "ksvc", rho_max: float = 0.9, fit_end: str | None = None) -> Estimate:
     """생산함수 다변량 필터 (한국은행 다변량필터링모형; 미 연준 Fleischman-Roberts 2011 의 수정형).
 
     관측식 (모두 100·log, 갭 ỹ 는 AR(2))
@@ -615,8 +628,9 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
     Y = np.column_stack([x1, d["p"], d["e"], d["h"], d["pi"]])
     if not has_h:
         Y[:, 3] = np.nan
-    hp_p, hp_e, hp_h = (hp_array(d[c].to_numpy(), lam) for c in ("p", "e", "h"))
-    a_init = hp_array((x1 - s * (d["p"] + d["e"] + d["h"])).to_numpy(), lam)
+    nf = _n_fit(d.index, fit_end)
+    hp_p, hp_e, hp_h = (hp_array(d[c].to_numpy()[:nf], lam) for c in ("p", "e", "h"))
+    a_init = hp_array((x1 - s * (d["p"] + d["e"] + d["h"])).to_numpy()[:nf], lam)
     m = 9
     pi1, pev = d["pi1"].to_numpy(), d["pe"].to_numpy()
 
@@ -653,7 +667,7 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
     x0 = np.array([1.0, -0.2, 0.2, 0.2, 0.1, 0.1, 0.8] + list(np.log([0.6, 0.3, 0.3, 0.2, 0.5, 0.3, 0.1, 0.02, 0.02])))
     bounds = ([(-0.5, 1.8), (-0.95, 0.5), (0.0, 1.5), (0.0, 1.5), (0.0, 1.5), (0.01, 1.0), (0.0, 0.99)] + [(-7, 2)] * 6 + [(-7, np.log(0.08))]
               + [(np.log(0.002), np.log(0.04))] * 2)
-    xh, ll, _ = SS.fit(Y, build_s, x0, bounds)
+    xh, ll, _ = SS.fit(Y[:nf], build_s, x0, bounds)
     st, _, _ = SS.ksmooth(Y, build(xh))
     idx = d.index
     S = lambda j: pd.Series(st[:, j], index=idx)  # noqa: E731
@@ -671,7 +685,7 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                   "갭 충격 표준편차": sd[0], "고용률 추세 충격 표준편차": sd[6],
                   "참가율 추세 기울기 충격 표준편차": sd[7], "근로시간 추세 기울기 충격 표준편차": sd[8],
                   "TFP 추세 평활 λ": lam, "갭 지속성 상한(AR 계수 합)": rho_max,
-                  "자본투입": ksrc, "표본": f"{idx[0]}~{idx[-1]}", "로그우도": ll}
+                  "자본투입": ksrc, "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["한국은행 다변량필터링모형(권지호 외 2019; 미 연준 FRB/US 공급부문의 Fleischman·Roberts 2011 모형 수정형)을 따름. "
                  "생산함수 접근과 같이 잠재 GDP = TFP 추세 + 노동소득분배율×(15세이상인구 + 참가율 추세 + 고용률 추세 + 근로시간 추세) "
                  "+ 자본몫×자본서비스 이나, 투입요소별 추세·순환을 따로 HP 필터하지 않고 하나의 상태공간모형으로 동시에 추정(칼만 필터 최우추정).",

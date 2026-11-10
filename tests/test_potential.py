@@ -69,7 +69,7 @@ def test_recent_potential_growth_plausible(kr, ests):
         assert 1.0 < row[e.name] < 3.5, (e.name, row[e.name])
     # 코로나 충격 2020년 갭은 대부분 방법에서 마이너스
     avg_names = [e.name for k, e in ests.items() if k.startswith("avg")]
-    neg = (gp.set_index("연도").loc[2020].drop(labels=avg_names) < 0).mean()
+    neg = (gp.set_index("연도").loc[2020].drop(labels=avg_names + ["구분"]) < 0).mean()
     assert neg >= 0.8
 
 
@@ -188,3 +188,71 @@ def test_excel_time_series_chart(kr, ests):
     labels = [c.value for c in next(ws.iter_cols(min_col=col, max_col=col, min_row=3))]
     labels = [v for v in labels if v]
     assert labels[-1] == gap["라벨"].iloc[-1] and (len(labels) - 1) % 4 == 0
+
+
+# ---------------------------------------------------------------------------
+# 끝점 보정: 한국은행 전망 연장
+# ---------------------------------------------------------------------------
+from engines.potential import forecast as F  # noqa: E402
+
+
+def _toy_fc():
+    return {"horizon": "2027Q4",
+            "gdp": {"q_qoq": {"2026Q3": 0.3, "2026Q4": 0.5}, "q_yoy": {"2026Q3": 2.6, "2026Q4": 3.3},
+                    "h_yoy": {"2026H2": 3.0, "2027H1": 2.5, "2027H2": 3.2}, "a_yoy": {"2026": 3.3, "2027": 2.9}},
+            "urate": {"h": {"2026H2": 2.9, "2027H1": 2.8, "2027H2": 2.8}},
+            "emp_change": {"h": {"2026H2": 18, "2027H1": 23, "2027H2": 17}}}
+
+
+def _toy_df():
+    idx = pd.period_range("2015Q1", "2026Q2", freq="Q")
+    n = len(idx)
+    return pd.DataFrame({"gdp": 1000 * 1.005 ** np.arange(n), "urate": 3.0, "emp": 27000 + 20 * np.arange(n),
+                         "lf": 28000 + 20 * np.arange(n), "pop15": 45000 * 1.002 ** np.arange(n),
+                         "ksvc": 100 * 1.007 ** np.arange(n)}, index=idx)
+
+
+def test_forecast_reproduces_half_year_growth():
+    df = _toy_df()
+    x, how = F.extend(df, _toy_fc(), "yoy")
+    assert str(x.index[-1]) == "2027Q4" and x[F.FC_COL].sum() == 6
+    g = x["gdp"]
+    hy = lambda y, h: (g[f"{y}Q{2 * h - 1}"] + g[f"{y}Q{2 * h}"]) / (g[f"{y - 1}Q{2 * h - 1}"] + g[f"{y - 1}Q{2 * h}"]) - 1  # noqa: E731
+    assert abs(100 * hy(2027, 2) - 3.2) < 1e-6           # 두 분기가 비어 있는 반기: 반기 전망 재현
+    assert abs(100 * hy(2027, 1) - 2.5) < 1e-6
+    assert abs(100 * (g["2026Q3"] / g["2025Q3"] - 1) - 2.6) < 1e-9   # 분기 경로 전년동기비
+    assert np.isclose(x.loc["2027Q1", "emp"], df.loc["2026Q1", "emp"] + 230)
+    assert x.loc["2027Q1", "urate"] == 2.8
+    assert np.isclose(x.loc["2027Q1", "lf"], x.loc["2027Q1", "emp"] / (1 - 0.028))
+    r = np.log(df["ksvc"].iloc[-1] / df["ksvc"].iloc[-13]) / 12
+    assert np.isclose(np.log(x.loc["2027Q4", "ksvc"] / x.loc["2027Q3", "ksvc"]), r)   # 추세 연장
+    assert set(how.index) == set(x.index[x[F.FC_COL] == 1])
+
+
+def test_forecast_qoq_mode_and_actuals_untouched():
+    df = _toy_df()
+    x, _ = F.extend(df, _toy_fc(), "qoq")
+    assert np.isclose(x.loc["2026Q3", "gdp"] / x.loc["2026Q2", "gdp"], 1.003)
+    pd.testing.assert_frame_equal(x.loc[:"2026Q2", df.columns], df.astype(float), check_freq=False)
+
+
+def test_forecast_korea_keeps_history_and_marks_tables(kr):
+    fc = F.load_bok()
+    x, _ = F.extend(kr, fc)
+    assert F.last_actual(x) == kr["gdp"].dropna().index[-1]
+    ests, errs = A.run(x, {"methods": ["hp", "lw", "pfmv", "pf"]})
+    assert not errs
+    base, _ = A.run(kr, {"methods": ["lw", "pfmv"]})
+    for k in ("lw", "pfmv"):       # 모수는 실적 구간에서만 추정 → 과거 추정치가 크게 바뀌지 않음
+        a0 = M.annual_growth(base[k].trend).loc[2005:2022]
+        a1 = M.annual_growth(ests[k].trend).loc[2005:2022]
+        assert (a0 - a1).abs().max() < 0.3
+        assert "평활에만" in ests[k].params["표본"]
+    ga, _ = A.annual_tables(x, ests, "2020Q1")
+    assert ga.set_index("연도").loc[int(fc["horizon"][:4]), "구분"] == "전망 포함"
+    L = A.latest(x, ests)
+    assert L["last"] == F.last_actual(x)
+    cmp_ = F.compare(x, fc)
+    h = cmp_.set_index("기간")
+    y2 = fc["horizon"][:4]
+    assert abs(h.loc[f"{y2}년 하반기", "연장 경로(%)"] - fc["gdp"]["h_yoy"][f"{y2}H2"]) < 0.01

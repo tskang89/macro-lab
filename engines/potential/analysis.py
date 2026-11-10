@@ -6,6 +6,7 @@ import pandas as pd
 
 from engines.potential import methods as M
 from engines.potential.data import NEEDS, available_methods, label
+from engines.potential.forecast import FC_COL, last_actual
 
 DEFAULT_CFG = {
     "methods": list(M.METHODS),
@@ -40,6 +41,7 @@ def run(df: pd.DataFrame, cfg: dict) -> tuple[dict[str, M.Estimate], dict[str, s
     c = {**DEFAULT_CFG, **cfg}
     y_full = M.log100(df["gdp"])
     y = y_full.loc[c["start"]:]
+    fit_end = str(last_actual(df)) if FC_COL in df.columns and (df[FC_COL] == 1).any() else None
     av = available_methods(df)
     ests: dict[str, M.Estimate] = {}
     errs: dict[str, str] = {}
@@ -81,11 +83,11 @@ def run(df: pd.DataFrame, cfg: dict) -> tuple[dict[str, M.Estimate], dict[str, s
         if k == "mv":
             return M.mv(y_full, df["urate"], df["core"], c["lam"], c["mv_lam_u"], c["mv_weight"])
         if k == "lw":
-            return M.lw(df, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"], sy_max=c["lw_sy_max"])
+            return M.lw(df, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"], sy_max=c["lw_sy_max"], fit_end=fit_end)
         if k == "svar":
             return M.svar(y_full, df["urate"], c["svar_p"])
         if k == "pfmv":
-            return M.pfmv(df, c["pf_labshare"], c["lam"], capital=c["pf_capital"], rho_max=c["pfmv_rho"])
+            return M.pfmv(df, c["pf_labshare"], c["lam"], capital=c["pf_capital"], rho_max=c["pfmv_rho"], fit_end=fit_end)
         if k == "pf":
             nairu = None
             if c["pf_labour"] == "lfpr" and c["pf_nairu"] in nairu_src and av.get(c["pf_nairu"], False):
@@ -134,6 +136,20 @@ def add_averages(y_full: pd.Series, ests: dict[str, M.Estimate], mode: str = "gr
         ests["avg"] = avg
 
 
+def _kind_q(df: pd.DataFrame, idx) -> list[str]:
+    if FC_COL not in df.columns:
+        return ["실적"] * len(idx)
+    f = df[FC_COL].reindex(idx).fillna(0).to_numpy()
+    return ["전망" if v else "실적" for v in f]
+
+
+def fc_years(df: pd.DataFrame) -> set[int]:
+    """전망으로 채운 분기가 하나라도 있는 연도."""
+    if FC_COL not in df.columns:
+        return set()
+    return set(int(p.year) for p in df.index[df[FC_COL] == 1])
+
+
 def _names(ests):
     return {k: e.name for k, e in ests.items()}
 
@@ -142,9 +158,10 @@ def quarterly_tables(df: pd.DataFrame, ests: dict[str, M.Estimate], start: str):
     y = M.log100(df["gdp"])
     idx = y.loc[start:].index
     lab = [label(p) for p in idx]
-    g = pd.DataFrame({"분기": idx.astype(str), "라벨": lab, "실제 성장률": M.yoy(y).reindex(idx).to_numpy()})
-    gap = pd.DataFrame({"분기": idx.astype(str), "라벨": lab})
-    lev = pd.DataFrame({"분기": idx.astype(str), "라벨": lab, "실제 GDP": df["gdp"].reindex(idx).to_numpy()})
+    kind = _kind_q(df, idx)
+    g = pd.DataFrame({"분기": idx.astype(str), "라벨": lab, "구분": kind, "실제 성장률": M.yoy(y).reindex(idx).to_numpy()})
+    gap = pd.DataFrame({"분기": idx.astype(str), "라벨": lab, "구분": kind})
+    lev = pd.DataFrame({"분기": idx.astype(str), "라벨": lab, "구분": kind, "실제 GDP": df["gdp"].reindex(idx).to_numpy()})
     for k, e in ests.items():
         g[e.name] = M.yoy(e.trend).reindex(idx).to_numpy()
         gap[e.name] = e.gap.reindex(idx).to_numpy()
@@ -169,14 +186,18 @@ def annual_tables(df: pd.DataFrame, ests: dict[str, M.Estimate], start: str):
     ga = ga.loc[y0:].dropna(how="all")
     gp = gp.loc[y0:].dropna(how="all")
     ga.index.name = gp.index.name = "연도"
-    return ga.reset_index(), gp.reset_index()
+    fy = fc_years(df)
+    ga, gp = ga.reset_index(), gp.reset_index()
+    for t in (ga, gp):
+        t.insert(1, "구분", ["전망 포함" if int(v) in fy else "실적" for v in t["연도"]])
+    return ga, gp
 
 
 def method_table(df: pd.DataFrame, e: M.Estimate, start: str):
     y = M.log100(df["gdp"])
     idx = y.loc[start:].index
     q = pd.DataFrame({
-        "분기": idx.astype(str), "라벨": [label(p) for p in idx],
+        "분기": idx.astype(str), "라벨": [label(p) for p in idx], "구분": _kind_q(df, idx),
         "실제 GDP(십억원)": df["gdp"].reindex(idx).to_numpy(),
         "잠재 GDP(십억원)": np.exp(e.trend.reindex(idx).to_numpy() / 100),
         "실제 성장률(전년동기비, %)": M.yoy(y).reindex(idx).to_numpy(),
@@ -187,12 +208,15 @@ def method_table(df: pd.DataFrame, e: M.Estimate, start: str):
                       "GDP 갭(연평균, %)": M.annual_mean(e.gap)})
     a = a.loc[int(start[:4]):].dropna(how="all")
     a.index.name = "연도"
-    return q, a.reset_index()
+    a = a.reset_index()
+    fy = fc_years(df)
+    a.insert(1, "구분", ["전망 포함" if int(v) in fy else "실적" for v in a["연도"]])
+    return q, a
 
 
 def latest(df: pd.DataFrame, ests: dict[str, M.Estimate]) -> dict:
     y = M.log100(df["gdp"])
-    last = y.dropna().index[-1]
+    last = last_actual(df)
     out = {"last": last, "actual_yoy": float(M.yoy(y).loc[last])}
     gaps = {k: float(e.gap.get(last, np.nan)) for k, e in ests.items()}
     pots = {k: float(M.yoy(e.trend).get(last, np.nan)) for k, e in ests.items()}
