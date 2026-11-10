@@ -93,8 +93,8 @@ def demand_tab(t: I.ICIO, focus: str):
     if key not in st.session_state:
         st.session_state[key] = DEMAND_PRESETS["중국 투자 5% 감소"]
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-    preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(DEMAND_PRESETS), key=f"{key}_preset")
-    if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
+    preset = c1.selectbox("예시 시나리오", ["(시나리오 선택)"] + list(DEMAND_PRESETS), key=f"{key}_preset")
+    if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(시나리오 선택)", width="stretch"):
         st.session_state[key] = DEMAND_PRESETS[preset]
         st.session_state.pop(f"{key}_editor", None)
         st.rerun()
@@ -185,8 +185,9 @@ def tariff_tab(t: I.ICIO, focus: str):
     st.session_state.setdefault("tar_ind", [GOODS])
     st.session_state.setdefault("tar_tau", 10.0)
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-    c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(TARIFF_PRESETS), key="tar_preset")
-    c2.button("예시 불러오기", on_click=_apply_tariff_preset, width="stretch", key="tar_load")
+    tsel = c1.selectbox("예시 시나리오", ["(시나리오 선택)"] + list(TARIFF_PRESETS), key="tar_preset")
+    c2.button("예시 불러오기", on_click=_apply_tariff_preset, width="stretch", key="tar_load",
+              disabled=tsel == "(시나리오 선택)")
     a, b, c = st.columns(3)
     imp = a.multiselect("관세 부과국(수입국)", [_clab(x) for x in copts if x != I.WORLD], key="tar_imp")
     exp = b.multiselect("대상 수출국", [_clab(x) for x in copts], key="tar_exp",
@@ -262,8 +263,8 @@ def supply_tab(t: I.ICIO, focus: str):
     if key not in st.session_state:
         st.session_state[key] = SUPPLY_PRESETS["대만 반도체·전자 생산 50% 차질"]
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-    preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(SUPPLY_PRESETS), key=f"{key}_preset")
-    if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
+    preset = c1.selectbox("예시 시나리오", ["(시나리오 선택)"] + list(SUPPLY_PRESETS), key=f"{key}_preset")
+    if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(시나리오 선택)", width="stretch"):
         st.session_state[key] = [p for p in SUPPLY_PRESETS[preset] if p[1] in t.si]
         st.session_state.pop(f"{key}_editor", None)
         st.rerun()
@@ -331,8 +332,8 @@ def price_tab(t: I.ICIO, focus: str):
     if key not in st.session_state:
         st.session_state[key] = PRICE_PRESETS["국제 에너지(원유·가스) 가격 30% 상승"]
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-    preset = c1.selectbox("예시 시나리오", ["(직접 입력)"] + list(PRICE_PRESETS), key=f"{key}_preset")
-    if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(직접 입력)", width="stretch"):
+    preset = c1.selectbox("예시 시나리오", ["(시나리오 선택)"] + list(PRICE_PRESETS), key=f"{key}_preset")
+    if c2.button("예시 불러오기", key=f"{key}_load", disabled=preset == "(시나리오 선택)", width="stretch"):
         st.session_state[key] = PRICE_PRESETS[preset]
         st.session_state.pop(f"{key}_editor", None)
         st.rerun()
