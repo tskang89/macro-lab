@@ -106,20 +106,75 @@ def footer():
     st.caption(DISCLAIMER)
 
 
-PICK_HELP = "칸을 두 번 누르면 목록이 펼쳐집니다. 글자를 쳐서 찾을 수도 있습니다."
-NUM_HELP = "칸을 두 번 누르고 숫자를 입력합니다."
+
+def row_editor(key: str, df_init: pd.DataFrame, cols: dict, note: str = "") -> pd.DataFrame:
+    """시나리오 입력 줄 편집기. 표(data_editor) 대신 줄마다 드롭다운·숫자 칸을 둔다(한 번 누르면 열림).
+
+    cols = {열 이름: {"options": [...]} (목록) 또는 {"num": True, "min", "max", "step", "fmt"}, "w": 폭}
+    st.session_state[key] 를 지우면 df_init 으로 다시 채운다(예시 불러오기·파일 불러오기).
+    """
+    nk = f"{key}__nid"
+    if not isinstance(st.session_state.get(key), list):
+        nid = st.session_state.get(nk, 0)
+        rows = []
+        for r in df_init.to_dict("records"):
+            rows.append({"_id": nid, **r})
+            nid += 1
+        st.session_state[key] = rows
+        st.session_state[nk] = nid
+    rows = st.session_state[key]
+    names = list(cols)
+    widths = [cols[n].get("w", 2) for n in names] + [0.45]
+    hdr = st.columns(widths, gap="small")
+    for c, n in zip(hdr, names):
+        c.markdown(f"<div style='font-size:0.85rem;font-weight:600;opacity:0.75'>{n}</div>", unsafe_allow_html=True)
+    out, drop = [], None
+    for row in rows:
+        cs = st.columns(widths, gap="small", vertical_alignment="center")
+        rec = {}
+        for c, n in zip(cs, names):
+            sp, wk = cols[n], f"{key}__{row['_id']}__{n}"
+            if "options" in sp:
+                opts = sp["options"]
+                v = row.get(n)
+                val = c.selectbox(n, opts, index=opts.index(v) if v in opts else 0, key=wk,
+                                  label_visibility="collapsed")
+            else:
+                lo, hi = sp.get("min"), sp.get("max")
+                v = row.get(n)
+                v = 0.0 if v is None or pd.isna(v) else float(v)
+                v = max(lo, v) if lo is not None else v
+                v = min(hi, v) if hi is not None else v
+                val = c.number_input(n, value=v, min_value=lo, max_value=hi, step=sp.get("step", 1.0),
+                                     format=sp.get("fmt", "%.2f"), key=wk, label_visibility="collapsed")
+            rec[n] = val
+            row[n] = val
+        if cs[-1].button("", icon=":material/close:", key=f"{key}__{row['_id']}__del", help="이 줄 지우기"):
+            drop = row["_id"]
+        out.append(rec)
+    if drop is not None:
+        st.session_state[key] = [r for r in rows if r["_id"] != drop]
+        st.rerun()
+    a, b = st.columns([1, 4], vertical_alignment="center")
+    if a.button("줄 추가", icon=":material/add:", key=f"{key}__add"):
+        new = {n: (rows[-1][n] if rows else (cols[n]["options"][0] if "options" in cols[n] else 0.0)) for n in names}
+        st.session_state[key] = rows + [{"_id": st.session_state[nk], **new}]
+        st.session_state[nk] += 1
+        st.rerun()
+    if note:
+        b.caption(note)
+    return pd.DataFrame(out, columns=names)
 
 
-def pick_col(label: str, **kw):
-    """data_editor 의 목록 선택 열. 표 안에서는 화살표가 안 보이므로 머리글에 ▼ 를 붙인다."""
-    return st.column_config.SelectboxColumn(f"{label} ▼", help=kw.pop("help", PICK_HELP), **kw)
-
-
-def num_col(label: str, **kw):
-    """data_editor 의 숫자 입력 열. 머리글에 ✎ 를 붙인다."""
-    return st.column_config.NumberColumn(f"{label} ✎", help=kw.pop("help", NUM_HELP), **kw)
-
-
-def editor_hint():
-    st.caption("▼ 열은 목록에서 고르고, ✎ 열은 숫자를 입력합니다(칸을 두 번 누름). "
-               "맨 아래 빈 줄을 누르면 줄이 추가되고, 줄 왼쪽을 골라 Delete 키로 지웁니다.")
+def run_gate(key: str, params):
+    """분석 실행 버튼. 누른 시점의 입력(params)을 기억해 돌려준다. 아직 안 눌렀으면 None."""
+    sk = f"{key}__ran"
+    if st.button("분석 실행", type="primary", icon=":material/play_arrow:", key=f"{key}__run"):
+        st.session_state[sk] = params
+    ran = st.session_state.get(sk)
+    if ran is None:
+        st.info("입력을 정한 뒤 **분석 실행**을 누르세요.")
+        return None
+    if ran != params:
+        st.warning("입력이 바뀌었습니다. 아래 결과는 직전 실행 기준입니다. **분석 실행**을 눌러야 새 입력이 반영됩니다.")
+    return ran

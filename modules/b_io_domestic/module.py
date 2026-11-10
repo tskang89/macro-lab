@@ -7,7 +7,7 @@ import streamlit as st
 
 from core import charts
 from core.result import ExcelChart, Result
-from core.ui import editor_hint, excel_button, footer, notes_box, num_col, page_header, pick_col, scenario_io, summary_cards, table
+from core.ui import excel_button, footer, notes_box, page_header, row_editor, run_gate, scenario_io, summary_cards, table
 from engines.io import domestic as D
 from engines.io.classify import ENERGY_IMPORT
 
@@ -94,21 +94,21 @@ def demand_tab(t: D.KrIO, level: str):
     st.caption("% : 해당 부문·항목 최종수요(국산+수입)의 증감률.  십억원 : 증감액(국산+수입). "
                "‘전 부문’ + 십억원이면 그 항목의 부문 구성비대로 나눕니다. 여러 줄은 합산됩니다.")
     df_in = pd.DataFrame(st.session_state[key], columns=["부문", "최종수요 항목", "단위", "크기"])
-    editor_hint()
-    edited = st.data_editor(
-        df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor",
-        column_config={
-            "부문": pick_col("부문", options=[D.ALL] + labels, required=True, width="large"),
-            "최종수요 항목": pick_col("최종수요 항목", options=[D.FD_ALL] + D.FD_NAMES, required=True),
-            "단위": pick_col("단위", options=["%", "십억원"], required=True),
-            "크기": num_col("크기", format="%.2f", required=True),
-        })
-    edited = edited.dropna()
+    edited = row_editor(f"{key}_editor", df_in, {
+        "부문": {"options": [D.ALL] + labels, "w": 3.3},
+        "최종수요 항목": {"options": [D.FD_ALL] + D.FD_NAMES, "w": 3.2},
+        "단위": {"options": ["%", "십억원"], "w": 1.2},
+        "크기": {"num": True, "fmt": "%.2f", "step": 1.0, "w": 1.5},
+    })
+    ran = run_gate(key, edited.to_dict("records"))
     scenario_io(edited.to_dict("records"), key, (f"{key}_editor",), "충격")
+    if ran is None:
+        return
+    edited = pd.DataFrame([r for r in ran if r["크기"] != 0], columns=["부문", "최종수요 항목", "단위", "크기"])
     shocks = [{"sector": _code(r["부문"], lab2code), "component": r["최종수요 항목"], "unit": r["단위"],
                "value": float(r["크기"])} for r in edited.to_dict("records")]
     if not shocks:
-        st.info("충격을 한 줄 이상 입력하세요.")
+        st.info("크기가 0 이 아닌 충격을 한 줄 이상 넣으세요.")
         return
 
     dF, dFd = D.build_demand_shock(t, shocks)
@@ -166,15 +166,19 @@ def price_tab(t: D.KrIO, level: str):
     tax = c3.number_input("순생산물세 상승률(%, 전 부문)", value=0.0, step=1.0, key=f"{key}_tax")
     with st.expander("부문별 수입가격·부가가치 개별 충격 (선택)"):
         st.caption("여기 넣은 값은 위의 공통 충격에 더해집니다.")
-        editor_hint()
-        ed = st.data_editor(pd.DataFrame(columns=["부문", "항목", "변화율(%)"]), num_rows="dynamic",
-                            width="stretch", key=f"{key}_editor",
-                            column_config={
-                                "부문": pick_col("부문", options=labels, required=True, width="large"),
-                                "항목": pick_col("항목", options=["수입가격"] + D.VA_NAMES, required=True),
-                                "변화율(%)": num_col("변화율(%)", format="%.2f", required=True)})
+        ed = row_editor(f"{key}_editor", pd.DataFrame(columns=["부문", "항목", "변화율(%)"]), {
+            "부문": {"options": labels, "w": 4},
+            "항목": {"options": ["수입가격"] + D.VA_NAMES, "w": 2},
+            "변화율(%)": {"num": True, "fmt": "%.2f", "step": 1.0, "w": 1.5},
+        }, note="줄 추가를 눌러 부문을 고르세요.")
     passthrough = st.slider("비용 상승의 국내 가격 전가율(%)", 0, 100, 100, key=f"{key}_pt",
                             help="레온티에프 가격모형은 100%(완전 전가)를 가정합니다. 낮추면 결과가 비례해 줄어듭니다.") / 100
+    p = run_gate(key, {"fx": fx, "fx_pt": fx_pt, "oil": oil, "wage": wage, "prof": prof, "tax": tax,
+                       "pt": passthrough, "rows": ed.to_dict("records")})
+    if p is None:
+        return
+    fx, fx_pt, oil, wage, prof, tax, passthrough = (p[k] for k in ("fx", "fx_pt", "oil", "wage", "prof", "tax", "pt"))
+    ed = pd.DataFrame(p["rows"], columns=["부문", "항목", "변화율(%)"])
 
     imp = np.full(t.n, fx * fx_pt / 100)
     for c in energy:
@@ -232,14 +236,15 @@ def supply_tab(t: D.KrIO, level: str):
     key = f"dom_supply_{level}"
     st.markdown("##### 생산 차질")
     default = {"대분류": "C09", "중분류": "31"}[level]
-    editor_hint()
-    ed = st.data_editor(pd.DataFrame([{"부문": code2lab[default], "생산 차질률(%)": 10.0}]), num_rows="dynamic",
-                        width="stretch", key=f"{key}_editor",
-                        column_config={
-                            "부문": pick_col("부문", options=labels, required=True, width="large"),
-                            "생산 차질률(%)": num_col("생산 차질률(%)", min_value=0.0, max_value=100.0, format="%.1f")})
+    ed = row_editor(f"{key}_editor", pd.DataFrame([{"부문": code2lab[default], "생산 차질률(%)": 10.0}]), {
+        "부문": {"options": labels, "w": 5},
+        "생산 차질률(%)": {"num": True, "min": 0.0, "max": 100.0, "fmt": "%.1f", "step": 5.0, "w": 2},
+    })
+    rows = run_gate(key, ed.to_dict("records"))
+    if rows is None:
+        return
     cut = np.zeros(t.n)
-    for r in ed.dropna().to_dict("records"):
+    for r in rows:
         cut[t.codes == _code(r["부문"], lab2code)] = r["생산 차질률(%)"]
     if not cut.any():
         st.info("차질 부문을 한 줄 이상 입력하세요.")
@@ -258,7 +263,7 @@ def supply_tab(t: D.KrIO, level: str):
     table(show)
     res = Result(
         module=MODULE, analysis="공급 차질",
-        inputs={"자료": f"{t.year}년 산업연관표", "부문 분류": LEVEL_LABEL[level], "차질 부문": ed.dropna().reset_index(drop=True)},
+        inputs={"자료": f"{t.year}년 산업연관표", "부문 분류": LEVEL_LABEL[level], "차질 부문": pd.DataFrame(rows)},
         summary=summ, tables={"부문별 결과": show},
         notes=COMMON_NOTES[:1] + [
             "전방 파급(Ghosh 공급모형): 차질 부문 산출이 줄면 이를 중간재로 쓰는 하류 부문 산출이 배분계수만큼 감소한다고 가정(대체 불가·재고 없음 → 상한).",

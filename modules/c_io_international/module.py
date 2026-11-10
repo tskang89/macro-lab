@@ -6,7 +6,7 @@ import streamlit as st
 
 from core import charts
 from core.result import ExcelChart, Result
-from core.ui import editor_hint, excel_button, footer, notes_box, num_col, page_header, pick_col, scenario_io, summary_cards, table
+from core.ui import excel_button, footer, notes_box, page_header, row_editor, run_gate, scenario_io, summary_cards, table
 from engines.io import icio as I
 from engines.io.icio_meta import COUNTRY_GROUPS, COUNTRY_KO, FD_KO, INDUSTRY_KO
 
@@ -102,22 +102,27 @@ def demand_tab(t: I.ICIO, focus: str):
                "산업을 고르면 그 산업 생산품에 대한 수요만 바뀝니다.")
     df_in = pd.DataFrame([{"수요국": _clab(c), "항목": FD_LABEL[f], "원산지": o, "산업": _ilab(s) if s != ALL_IND else ALL_IND, "변화율(%)": v}
                           for c, f, o, s, v in st.session_state[key]])
-    editor_hint()
-    ed = st.data_editor(df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor", column_config={
-        "수요국": pick_col("수요국", options=[_clab(c) for c in copts], required=True, width="medium"),
-        "항목": pick_col("항목", options=[FD_LABEL[f] for f in FD_OPTS], required=True),
-        "원산지": pick_col("원산지", options=["전체", "국산", "수입"], required=True),
-        "산업": pick_col("산업", options=[ALL_IND] + [_ilab(s) for s in t.industries], required=True, width="medium"),
-        "변화율(%)": num_col("변화율(%)", format="%.2f", required=True)})
+    ed = row_editor(f"{key}_editor", df_in, {
+        "수요국": {"options": [_clab(c) for c in copts], "w": 2.5},
+        "항목": {"options": [FD_LABEL[f] for f in FD_OPTS], "w": 2.2},
+        "원산지": {"options": ["전체", "국산", "수입"], "w": 1.2},
+        "산업": {"options": [ALL_IND] + [_ilab(s) for s in t.industries], "w": 3},
+        "변화율(%)": {"num": True, "fmt": "%.2f", "step": 1.0, "w": 1.4},
+    })
+    ran = run_gate(key, ed.to_dict("records"))
     lab2c = {_clab(c): c for c in copts}
     lab2f = {v: k for k, v in FD_LABEL.items()}
     lab2s0 = {_ilab(s): s for s in t.industries}
     scenario_io([[lab2c.get(r["수요국"], r["수요국"]), lab2f.get(r["항목"], I.FD_ALL), r["원산지"],
                   lab2s0.get(r["산업"], ALL_IND), r["변화율(%)"]] for r in ed.dropna().to_dict("records")],
                 key, (f"{key}_editor",), "충격")
+    if ran is None:
+        return
     lab2s = {_ilab(s): s for s in t.industries}
     shocks = []
-    for r in ed.dropna().to_dict("records"):
+    for r in ran:
+        if r["변화율(%)"] == 0:
+            continue
         s = lab2s.get(r["산업"])
         shocks.append({"country": lab2c.get(r["수요국"], r["수요국"]), "component": lab2f.get(r["항목"], I.FD_ALL),
                        "origin": r["원산지"], "industries": [s] if s else [], "pct": float(r["변화율(%)"])})
@@ -139,7 +144,7 @@ def demand_tab(t: I.ICIO, focus: str):
     res = Result(
         module=MODULE, analysis="국가 간 수요 파급",
         inputs={"자료": f"OECD ICIO {t.edition}년판 {t.year}년 표", "관심 국가": _clab(focus), "단위": "백만 달러(요약은 10억 달러)",
-                "충격 목록": ed.dropna().reset_index(drop=True)},
+                "충격 목록": pd.DataFrame(ran)},
         summary=summ,
         tables={"국가별 결과": full, f"{COUNTRY_KO[focus]} 산업별": ind,
                 "국가×산업 전체": cells[cells[["최종수요 변화", "산출 변화", "부가가치 변화"]].abs().sum(1) > 1e-9]},
@@ -203,6 +208,10 @@ def tariff_tab(t: I.ICIO, focus: str):
     if not imp_c or not exp_c or not inds:
         st.info("수입국·수출국·산업을 고르세요.")
         return
+    p = run_gate("tar", {"imp": imp_c, "exp": exp_c, "inds": inds, "tau": tau, "eps": eps, "sd": sd, "s3": s3, "pt": pt})
+    if p is None:
+        return
+    imp_c, exp_c, inds, tau, eps, sd, s3, pt = (p[k] for k in ("imp", "exp", "inds", "tau", "eps", "sd", "s3", "pt"))
     ctab, cells, dva, dx, summ, info = I.tariff_effect(t, imp_c, exp_c, inds, tau, eps, sd / 100, s3 / 100, pt / 100)
     frow = ctab[ctab["국가코드"] == focus].iloc[0]
     summ[f"{COUNTRY_KO[focus]} GDP 대비(%)"] = frow["GDP 대비(%)"]
@@ -259,15 +268,18 @@ def supply_tab(t: I.ICIO, focus: str):
         st.session_state.pop(f"{key}_editor", None)
         st.rerun()
     df_in = pd.DataFrame([{"국가": _clab(c), "산업": _ilab(s), "생산 차질률(%)": v} for c, s, v in st.session_state[key]])
-    editor_hint()
-    ed = st.data_editor(df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor", column_config={
-        "국가": pick_col("국가", options=[_clab(c) for c in clist], required=True),
-        "산업": pick_col("산업", options=[_ilab(s) for s in t.industries], required=True, width="large"),
-        "생산 차질률(%)": num_col("생산 차질률(%)", min_value=0.0, max_value=100.0, format="%.1f")})
+    ed = row_editor(f"{key}_editor", df_in, {
+        "국가": {"options": [_clab(c) for c in clist], "w": 2.5},
+        "산업": {"options": [_ilab(s) for s in t.industries], "w": 4},
+        "생산 차질률(%)": {"num": True, "min": 0.0, "max": 100.0, "fmt": "%.1f", "step": 5.0, "w": 1.6},
+    })
+    ran = run_gate(key, ed.to_dict("records"))
+    if ran is None:
+        return
     lab2c = {_clab(c): c for c in clist}
     lab2s = {_ilab(s): s for s in t.industries}
     cuts = {}
-    for r in ed.dropna().to_dict("records"):
+    for r in ran:
         if r["생산 차질률(%)"] > 0:
             cuts[t.idx(lab2c[r["국가"]], lab2s[r["산업"]])] = float(r["생산 차질률(%)"])
     if not cuts:
@@ -288,7 +300,7 @@ def supply_tab(t: I.ICIO, focus: str):
     ind = I.industry_table(t, focus, {"전방 부가가치 변화(백만 달러)": t.v * fwd, "후방 부가가치 변화(백만 달러)": t.v * bwd})
     res = Result(
         module=MODULE, analysis="공급망 차질",
-        inputs={"자료": f"OECD ICIO {t.edition}년판 {t.year}년 표", "관심 국가": _clab(focus), "차질 목록": ed.dropna().reset_index(drop=True)},
+        inputs={"자료": f"OECD ICIO {t.edition}년판 {t.year}년 표", "관심 국가": _clab(focus), "차질 목록": pd.DataFrame(ran)},
         summary=summ, tables={"국가별 결과": ctab, f"{COUNTRY_KO[focus]} 산업별": ind},
         notes=COMMON_NOTES + [
             "전방(Ghosh 공급모형): 차질 산업의 산출 감소가 그 제품을 중간재로 쓰는 국내외 하류 산업으로 배분계수만큼 전파된다고 가정. 대체·재고가 없을 때의 상한.",
@@ -326,15 +338,18 @@ def price_tab(t: I.ICIO, focus: str):
         st.rerun()
     st.caption("고른 국가·산업의 생산자가격을 외생으로 올리면, 그 제품을 직·간접으로 쓰는 다른 산업의 가격이 비용 전가로 오릅니다.")
     df_in = pd.DataFrame([{"국가": _clab(c), "산업": s if s == MANUF else _ilab(s), "가격 변화율(%)": v} for c, s, v in st.session_state[key]])
-    editor_hint()
-    ed = st.data_editor(df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor", column_config={
-        "국가": pick_col("국가", options=[_clab(c) for c in copts], required=True),
-        "산업": pick_col("산업", options=[MANUF] + [_ilab(s) for s in t.industries], required=True, width="large"),
-        "가격 변화율(%)": num_col("가격 변화율(%)", format="%.1f")})
+    ed = row_editor(f"{key}_editor", df_in, {
+        "국가": {"options": [_clab(c) for c in copts], "w": 2.5},
+        "산업": {"options": [MANUF] + [_ilab(s) for s in t.industries], "w": 4},
+        "가격 변화율(%)": {"num": True, "fmt": "%.1f", "step": 5.0, "w": 1.6},
+    })
+    ran = run_gate(key, ed.to_dict("records"))
+    if ran is None:
+        return
     lab2c = {_clab(c): c for c in copts}
     lab2s = {_ilab(s): s for s in t.industries}
     fixed = {}
-    for r in ed.dropna().to_dict("records"):
+    for r in ran:
         inds = [s for s in t.industries if s[0] == "C"] if r["산업"] == MANUF else [lab2s[r["산업"]]]
         for c in t.expand(lab2c[r["국가"]]):
             for s in inds:
@@ -359,7 +374,7 @@ def price_tab(t: I.ICIO, focus: str):
     ind = I.industry_table(t, focus, {"생산자가격 변화(%)": dp * 100})
     res = Result(
         module=MODULE, analysis="가격 파급",
-        inputs={"자료": f"OECD ICIO {t.edition}년판 {t.year}년 표", "관심 국가": _clab(focus), "가격 충격": ed.dropna().reset_index(drop=True)},
+        inputs={"자료": f"OECD ICIO {t.edition}년판 {t.year}년 표", "관심 국가": _clab(focus), "가격 충격": pd.DataFrame(ran)},
         summary=summ, tables={"국가별 결과": full, f"{COUNTRY_KO[focus]} 산업별": ind},
         notes=COMMON_NOTES[:1] + [
             "외생 가격 모형: 충격 국가·산업의 가격을 고정하고, 나머지 가격은 Δp_r' = Δp_f'·A_fr·(I - A_rr)^-1 로 결정(비용 완전 전가, 임금·이윤·환율 불변).",
