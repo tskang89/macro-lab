@@ -219,6 +219,45 @@ def extend(df: pd.DataFrame, fc: dict, mode: str = "yoy") -> tuple[pd.DataFrame,
     return out, tab
 
 
+TAIL = 2.0               # FC_COL 값: 전망 시계 이후 중기 가정으로 연장한 분기(필터 끝점용, 화면에는 표시 안 함)
+
+
+def add_tail(df: pd.DataFrame, growth: float, n: int = 12) -> pd.DataFrame:
+    """전망 시계 뒤를 중기 성장률 가정으로 n분기 연장 (AR 예측 연장 대신).
+
+    AR 연장은 표본(2008년 이후) 평균 성장률(약 2.7%)로 되돌아가 끝점 추세를 끌어올린다. 대신 실질 GDP 는 연 growth% 로,
+    15세 이상 인구·근로시간·자본서비스·자본스톡은 직전 분기 증가율로, 취업자는 고용률 유지(인구와 같은 증가율),
+    실업률·가동률·금리·기대인플레이션은 유지, 물가는 2% 목표 상승률로 연장한다.
+    """
+    idx = pd.period_range(df.index[-1] + 1, periods=n, freq="Q")
+    e = df.reindex(df.index.append(idx)).copy()
+    g = (1 + growth / 100) ** 0.25
+    for q in idx:
+        e.loc[q, "gdp"] = e.loc[q - 1, "gdp"] * g
+        for c in ("pop15", "hours", "ksvc", "capital"):
+            if c in e and pd.notna(e.loc[q - 2, c]):
+                e.loc[q, c] = e.loc[q - 1, c] ** 2 / e.loc[q - 2, c]
+        for c in ("urate", "capu", "rate", "pie"):
+            if c in e:
+                e.loc[q, c] = e.loc[q - 1, c]
+        if {"emp", "pop15"} <= set(e.columns) and pd.notna(e.loc[q - 4, "emp"]):
+            e.loc[q, "emp"] = e.loc[q - 4, "emp"] * e.loc[q, "pop15"] / e.loc[q - 4, "pop15"]
+            if "lf" in e and "urate" in e:
+                e.loc[q, "lf"] = e.loc[q, "emp"] / (1 - e.loc[q, "urate"] / 100)
+        for c in ("core", "cpi"):
+            if c in e and pd.notna(e.loc[q - 4, c]):
+                e.loc[q, c] = e.loc[q - 4, c] * 1.02
+    e.loc[idx, FC_COL] = TAIL
+    return e
+
+
+def shown(df: pd.DataFrame) -> pd.DataFrame:
+    """화면·표에 보일 구간(실적 + 전망, 중기 가정 꼬리는 제외)."""
+    if FC_COL in df.columns:
+        return df[df[FC_COL] < TAIL]
+    return df
+
+
 def last_actual(df: pd.DataFrame) -> pd.Period:
     if FC_COL in df.columns and (df[FC_COL] == 0).any():
         return df.index[(df[FC_COL] == 0) & df["gdp"].notna()][-1]

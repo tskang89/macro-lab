@@ -33,6 +33,7 @@ DEFAULT_CFG = {
     "pf_cu": True,
     "pfmv_rho": 0.9,
     "avg_mode": "group",
+    "tfp_cut": None,
 }
 NEEDS_OTHER = ("lw", "mv", "svar", "pf", "pfmv")
 
@@ -87,12 +88,14 @@ def run(df: pd.DataFrame, cfg: dict) -> tuple[dict[str, M.Estimate], dict[str, s
         if k == "svar":
             return M.svar(y_full, df["urate"], c["svar_p"])
         if k == "pfmv":
-            return M.pfmv(df, c["pf_labshare"], c["lam"], capital=c["pf_capital"], rho_max=c["pfmv_rho"], fit_end=fit_end)
+            return M.pfmv(df, c["pf_labshare"], c["lam"], capital=c["pf_capital"], rho_max=c["pfmv_rho"], fit_end=fit_end,
+                          tfp_cut=c["tfp_cut"])
         if k == "pf":
             nairu = None
             if c["pf_labour"] == "lfpr" and c["pf_nairu"] in nairu_src and av.get(c["pf_nairu"], False):
                 nairu = nairu_of(c["pf_nairu"])
-            return M.pf(df, c["pf_labshare"], c["lam"], c["extend"], nairu, c["pf_capital"], c["pf_labour"], c["pf_cu"])
+            return M.pf(df, c["pf_labshare"], c["lam"], c["extend"], nairu, c["pf_capital"], c["pf_labour"], c["pf_cu"],
+                        tfp_cut=c["tfp_cut"])
         return None
 
     for k in order:

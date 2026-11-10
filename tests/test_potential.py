@@ -256,3 +256,24 @@ def test_forecast_korea_keeps_history_and_marks_tables(kr):
     h = cmp_.set_index("기간")
     y2 = fc["horizon"][:4]
     assert abs(h.loc[f"{y2}년 하반기", "연장 경로(%)"] - fc["gdp"]["h_yoy"][f"{y2}H2"]) < 0.01
+
+
+def test_tail_and_shown():
+    df = _toy_df()
+    x, _ = F.extend(df, _toy_fc(), "yoy")
+    t = F.add_tail(x, 2.0, 12)
+    assert (t[F.FC_COL] == F.TAIL).sum() == 12
+    g = t["gdp"].pct_change().loc[t[F.FC_COL] == F.TAIL]
+    assert np.allclose(g, 1.02 ** 0.25 - 1)
+    assert F.shown(t).index[-1] == x.index[-1]
+    assert F.first_forecast(t) == x.index[F.FC_COL in x and (x[F.FC_COL] == 1).argmax()]
+
+
+def test_tfp_cut_extends_trend_linearly(kr):
+    e = M.pf(kr, extend=12, tfp_cut="2024Q4")
+    tr = e.extra["생산함수 투입"]["추세 TFP"]
+    d = tr.loc["2025Q1":].diff().dropna()
+    assert np.allclose(d, d.iloc[0])                 # 고정 시점 뒤는 일정한 기울기
+    assert "2024Q4" in e.params["TFP 추세"]
+    base = M.pf(kr, extend=12)
+    assert np.allclose(tr.loc[:"2015Q4"], base.extra["생산함수 투입"]["추세 TFP"].loc[:"2015Q4"], atol=0.05)

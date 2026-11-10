@@ -504,7 +504,8 @@ HOURS_NOTE = ("평균 근로시간: OECD 취업자 1인당 연간 실근로시�
 
 
 def pf(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, extend: int = 12,
-       nairu: pd.Series | None = None, capital: str = "ksvc", labour: str = "lfpr", cu_adjust: bool = True) -> Estimate:
+       nairu: pd.Series | None = None, capital: str = "ksvc", labour: str = "lfpr", cu_adjust: bool = True,
+       tfp_cut: str | None = None) -> Estimate:
     """생산함수 접근 (한국은행 권지호 외 2019, 이은경 외 2024).
 
       Y = A · L^s · K^(1-s)      (s: 노동소득분배율)
@@ -536,7 +537,15 @@ def pf(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, extend: int 
         eff = (b[2] * cu + b[3] * cu.shift(1)).fillna(b[2] * cu).fillna(0)
         tfp_adj = tfp - eff
         cu_info = f"가동률 계수(현재 {b[2]:.3f}, 직전 {b[3]:.3f})"
-    tfp_t = hp_series(tfp_adj, lam, extend)
+    cut = pd.Period(tfp_cut, freq="Q") if tfp_cut else None
+    if cut is not None and cut < d.index[-1]:
+        # 전망 구간의 성장(반도체 호황 등)을 순환으로 보고 TFP 추세는 실적 구간까지만 추정한 뒤 최근 3년 기울기로 연장
+        part = hp_series(tfp_adj.loc[:cut], lam, max(extend, 12))
+        sl = float(part.diff().iloc[-12:].mean())
+        after = d.index[d.index > cut]
+        tfp_t = pd.concat([part, pd.Series(part.iloc[-1] + sl * np.arange(1, len(after) + 1), index=after)])
+    else:
+        tfp_t = hp_series(tfp_adj, lam, extend)
     h_t = hp_series(d["lh"], lam, extend) if has_h else d["lh"]
     comp_lab = {}
     u_t = er_t = part_t = None
@@ -582,7 +591,9 @@ def pf(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, extend: int 
     est.params = {"노동소득분배율": labshare, "HP λ": lam, "끝점 연장(분기)": extend, "자본투입": ksrc,
                   "잠재노동 정의": "15세이상인구×고용률 추세×근로시간 추세" if labour == "emprate"
                   else "15세이상인구×참가율 추세×(1-자연실업률)×근로시간 추세",
-                  "자연실업률·고용률": nsrc, "TFP 가동률 조정": cu_info}
+                  "자연실업률·고용률": nsrc, "TFP 가동률 조정": cu_info,
+                  "TFP 추세": f"{cut} 까지 추정 후 최근 3년 기울기로 연장(전망 구간 성장은 순환으로 간주)"
+                  if cut is not None and cut < d.index[-1] else "전 구간 HP"}
     lab_note = ("잠재노동 = 15세이상인구 × 고용률 추세 × 평균 근로시간 추세(한국은행 2024년 방식). " if labour == "emprate" else
                 f"잠재노동 = 15세이상인구 × 경제활동참가율 추세 × (1-자연실업률) × 평균 근로시간 추세(한국은행 2019년 방식). 자연실업률: {nsrc}. ")
     est.notes = [f"콥-더글러스 생산함수 Y = A·L^s·K^(1-s), 노동소득분배율 s={labshare:g}(한국은행 2019년 논고와 같은 값). "
@@ -592,7 +603,9 @@ def pf(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, extend: int 
                  f"자본투입: {ksrc}. 자본서비스는 자산별 생산자본스톡을 사용자비용으로 가중한 물량(한국은행 국민대차대조표, 전산업 연쇄 통크비스트)이며 "
                  "전부 추세로 간주. 마지막 공표 연도 이후는 최근 3년 평균 증가율로 연장.",
                  HOURS_NOTE if has_h else "근로시간 자료가 없어 취업자 수 기준으로 계산함.",
-                 f"TFP 추세: HP 필터 순환 부분 중 제조업 가동률(현재·직전 분기)로 설명되는 부분을 걷어낸 뒤 다시 HP 필터({cu_info})."]
+                 f"TFP 추세: HP 필터 순환 부분 중 제조업 가동률(현재·직전 분기)로 설명되는 부분을 걷어낸 뒤 다시 HP 필터({cu_info})."
+                 + (f" 전망 구간의 성장은 순환(수요 압력)으로 보아 TFP 추세는 {cut}까지 실적으로만 추정하고 그 뒤는 최근 3년 추세 기울기로 연장."
+                    if cut is not None and cut < d.index[-1] else "")]
     est.extra = {"잠재성장률 기여도": comp, "생산함수 투입": inputs}
     return est
 
@@ -604,7 +617,8 @@ def _ar2_var(f1: float, f2: float) -> float:
 
 
 def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str = "2000Q1",
-         capital: str = "ksvc", rho_max: float = 0.9, fit_end: str | None = None) -> Estimate:
+         capital: str = "ksvc", rho_max: float = 0.9, fit_end: str | None = None,
+         tfp_cut: str | None = None) -> Estimate:
     """생산함수 다변량 필터 (한국은행 다변량필터링모형; 미 연준 Fleischman-Roberts 2011 의 수정형).
 
     관측식 (모두 100·log, 갭 ỹ 는 AR(2))
@@ -668,7 +682,11 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
     bounds = ([(-0.5, 1.8), (-0.95, 0.5), (0.0, 1.5), (0.0, 1.5), (0.0, 1.5), (0.01, 1.0), (0.0, 0.99)] + [(-7, 2)] * 6 + [(-7, np.log(0.08))]
               + [(np.log(0.002), np.log(0.04))] * 2)
     xh, ll, _ = SS.fit(Y[:nf], build_s, x0, bounds)
-    st, _, _ = SS.ksmooth(Y, build(xh))
+    Ys = Y.copy()
+    if tfp_cut:
+        # 전망 구간의 산출(생산함수 관측식)은 평활에 쓰지 않음 → TFP 추세는 실적 구간의 기울기로 이어지고 전망 성장은 갭으로
+        Ys[int((d.index <= pd.Period(tfp_cut, freq="Q")).sum()):, 0] = np.nan
+    st, _, _ = SS.ksmooth(Ys, build(xh))
     idx = d.index
     S = lambda j: pd.Series(st[:, j], index=idx)  # noqa: E731
     a_, p_, e_, h_ = S(2), S(4), S(6), S(7)
@@ -695,6 +713,10 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                  f"최우추정. 갭이 단위근에 가깝게 추정돼 추세 변화를 흡수하지 않도록 AR 계수 합을 {rho_max:g} 이하로 제한. "
                  "원논문의 공급충격 변수와 노동의 질은 넣지 않음.",
                  f"자본투입: {ksrc}(추세로 간주). " + (HOURS_NOTE if has_h else "근로시간 자료가 없어 근로시간 식은 뺌.")]
+    if tfp_cut and pd.Period(tfp_cut, freq="Q") < idx[-1]:
+        est.params["TFP 추세"] = f"{tfp_cut} 이후 산출 관측은 평활에 쓰지 않음(그 뒤 성장은 순환으로 간주)"
+        est.notes.append(f"TFP 추세: {tfp_cut} 이후의 산출(생산함수 관측식)은 평활에 쓰지 않아, TFP 추세는 그때까지의 기울기로 이어지고 "
+                         "그 뒤 성장(반도체 호황 등)은 GDP 갭으로 잡힘. 노동 투입 추세는 전망 자료를 그대로 씀.")
     ustar = 100 * (1 - np.exp(e_ / 100))
     est.extra = {"잠재성장률 기여도": comp,
                  "자연실업률": pd.DataFrame({"실업률(%)": df["urate"].reindex(idx), "자연실업률 추정(%)": ustar,

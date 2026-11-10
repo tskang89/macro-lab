@@ -96,6 +96,23 @@ def _gname(k: str) -> str:
     return f"[{M.GROUP[k]}] {M.METHODS[k]}" if k in M.GROUP else M.AVG_KEYS.get(k, k)
 
 
+BOK4 = ("hp", "lw", "pfmv", "pf")
+
+
+def _trim(df, ests):
+    """중기 가정 꼬리를 화면에서 뺌(추정에는 썼음)."""
+    d = F.shown(df)
+    if len(d) == len(df):
+        return df, ests
+    end = d.index[-1]
+    out = {}
+    for k, e in ests.items():
+        e2 = M.Estimate(e.key, e.name, e.trend.loc[:end], e.gap.loc[:end], dict(e.params), list(e.notes),
+                        {n: (t.loc[:end] if isinstance(t.index, pd.PeriodIndex) else t) for n, t in e.extra.items()})
+        out[k] = e2
+    return d, out
+
+
 def _sq(df) -> str | None:
     """분기 차트 음영 시작 라벨(첫 전망 분기)."""
     p = F.first_forecast(df)
@@ -122,6 +139,9 @@ def _fc_notes() -> list[str]:
             "근원물가·소비자물가 = 분기 경로·반기 상승률 전망(한국은행 근원물가는 식료품·에너지 제외 기준이나 상승률을 농산물·석유류 제외 지수에 적용), "
             "15세 이상 인구·평균 근로시간·자본서비스·자본스톡 = 최근 3년 평균 증가율로 추세 연장, 가동률 = 최근 4분기 평균, "
             "기준금리·기대인플레이션 = 마지막 값 유지.",
+            f"전망 시계 뒤로는 3년간 실질 GDP 를 연 {info.get('tail', 2.0)}%(중기 성장률 가정)로, 인구·근로시간·자본은 추세로, 고용률·실업률은 "
+            "유지, 물가는 2%로 이어 붙여 필터의 끝점을 처리하고 화면에는 전망 시계까지만 보임(AR 예측 연장은 2008년 이후 평균 "
+            "성장률로 되돌아가 끝점 추세를 끌어올리므로 쓰지 않음).",
             "전망 구간(차트 음영, 표의 '전망')의 잠재성장률·GDP 갭은 전망을 전제로 한 값. 연간 표의 '실제 성장률'도 전망 포함 연도는 전망치."]
 
 
@@ -138,7 +158,7 @@ def _data_source():
         fc = F.load_bok()
         if fc is None:
             return df, "KR", SOURCES_KR
-        c1, c2 = st.columns([1, 1])
+        c1, c2, c3 = st.columns([5, 4, 3])
         on = c1.toggle(f"끝점 보정: 한국은행 전망으로 {D.label(pd.Period(fc['horizon'], freq='Q'))}까지 연장", value=True,
                        key="pg_fc_on",
                        help=f"{fc['title']}의 GDP 성장률(분기 경로·반기·연간)로 실질 GDP 를 연장하고, 생산함수·준구조모형 입력 변수도 "
@@ -148,11 +168,16 @@ def _data_source():
                         format_func=lambda x: "전년동기비 전망 그대로" if x == "yoy" else "전기비 경로를 실적에 이어 붙임",
                         help="전년동기비: 발표된 분기·반기·연간 성장률을 그대로 재현. 전기비: 마지막 실적 수준에서 전망 경로의 전기비 "
                              "성장을 이어 붙여, 전망 이후 실적이 예상과 달라진 만큼의 수준 차이가 남습니다.")
+        tail = c3.number_input("전망 이후 중기 성장률 가정(%)", 0.0, 5.0, 2.0, step=0.1, key="pg_fc_tail", disabled=not on,
+                               help="전망 시계 뒤 3년을 이 성장률로 이어 붙여 필터의 끝점을 처리합니다(화면에는 전망 시계까지만 표시). "
+                                    "AR 예측 연장은 2008년 이후 평균 성장률(약 2.7%)로 되돌아가 끝점 잠재성장률을 끌어올리므로 대신 씀. "
+                                    "기본 2.0%는 한국은행 이은경 외(2024)의 2024~26년 잠재성장률 추정치이자 이 도구의 실적 기준 2025년 추정치 수준.")
         if not on:
             return df, "KR", SOURCES_KR
         dfx, how = F.extend(df, fc, mode)
-        st.session_state["pg_fc_info"] = {"fc": fc, "how": how, "cmp": F.compare(dfx, fc), "mode": mode}
-        return dfx, f"KR_fc_{fc['published']}_{mode}", SOURCES_KR + [
+        st.session_state["pg_fc_info"] = {"fc": fc, "how": how, "cmp": F.compare(dfx, fc), "mode": mode, "tail": tail}
+        dfx = F.add_tail(dfx, tail)
+        return dfx, f"KR_fc_{fc['published']}_{mode}_{tail}", SOURCES_KR + [
             f"{fc['title']} — {fc['pages']} ({fc['url']})"]
     up = st.file_uploader("분기 자료 CSV·엑셀", type=["csv", "xlsx"], key="pg_upload",
                           help="첫 열은 분기(2024Q1 형식), 다음 열 이름: gdp(필수, 계절조정 실질), urate, core, emp, lf, pop15, "
@@ -177,15 +202,21 @@ def _data_source():
 def _settings(df: pd.DataFrame) -> tuple[dict, str]:
     av = D.available_methods(df)
     usable = [k for k in M.METHODS if k not in av or av[k]]
-    quarters = [str(p) for p in df["gdp"].dropna().index]
-    st.markdown("**추정 방법**")
+    quarters = [str(p) for p in F.shown(df)["gdp"].dropna().index]
+    has_tail = F.FC_COL in df.columns and (df[F.FC_COL] == F.TAIL).any()
+    preset = st.radio("**추정 방법**", ["bok4", "all"], horizontal=True, key="pg_preset",
+                      format_func=lambda x: "한국은행 4개 모형 (HP·준구조·생산함수 다변량 필터·생산함수)" if x == "bok4"
+                      else "전체 12가지 방법",
+                      help="한국은행은 HP 필터·준구조모형(LW형)·다변량필터링모형·생산함수모형 4개의 평균을 발표합니다(권지호 외 2019, "
+                           "이은경 외 2024). 선형 추세·CF·Hamilton·구조 VAR 등은 끝점에서 출렁임이 커 기본 평균에서 뺐습니다.")
     gcols = st.columns(3)
     chosen = []
     for col, (g, gname) in zip(gcols, M.GROUPS.items()):
         opts = [k for k in M.METHODS if M.GROUP_OF[k] == g]
         ok = [k for k in opts if k in usable]
+        dflt = [k for k in ok if k in BOK4] if preset == "bok4" else ok
         with col:
-            chosen += st.multiselect(gname, ok, default=ok, format_func=lambda k: M.METHODS[k], key=f"pg_methods_{g}",
+            chosen += st.multiselect(gname, ok, default=dflt, format_func=lambda k: M.METHODS[k], key=f"pg_methods_{g}_{preset}",
                                      placeholder="자료가 없어 쓸 수 없음" if not ok else "방법 선택")
             miss = [k for k in opts if k not in usable]
             if miss:
@@ -200,17 +231,22 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str]:
                            key="pg_show")
     cfg = dict(A.DEFAULT_CFG)
     cfg["methods"], cfg["start"] = chosen, start
-    cfg["avg_mode"] = cc[2].radio("방법 평균", ["group", "all"], horizontal=True, key="pg_avgmode",
+    cfg["avg_mode"] = cc[2].radio("방법 평균", ["group", "all"], horizontal=True, key=f"pg_avgmode_{preset}",
+                                  index=1 if preset == "bok4" else 0,
                                   format_func=lambda x: "모형군 평균의 평균" if x == "group" else "모든 방법 단순 평균",
-                                  help="모형군 평균의 평균: 통계·준구조·생산함수 모형군에 같은 비중(방법 수가 많은 통계모형에 쏠리지 않음).")
+                                  help="모형군 평균의 평균: 통계·준구조·생산함수 모형군에 같은 비중(방법 수가 많은 통계모형에 쏠리지 않음). "
+                                       "한국은행 4개 모형은 단순 평균이 기본(한국은행 발표 방식).")
     with st.expander("방법별 세부 설정"):
         t1, t2, t3 = st.tabs(["통계모형", "준구조모형", "생산함수모형"])
         with t1:
             a, b, c = st.columns(3)
             with a:
                 cfg["lam"] = st.number_input("HP λ (분기, 생산함수 추세에도 적용)", 100.0, 100000.0, 1600.0, step=100.0, key="pg_lam")
-                cfg["extend"] = st.slider("끝점 연장(분기, AR 예측)", 0, 20, 12, key="pg_ext",
-                                          help="HP·생산함수 추세에 적용. 0이면 연장하지 않음.")
+                cfg["extend"] = st.slider("끝점 연장(분기, AR 예측)", 0, 20, 12, key="pg_ext", disabled=has_tail,
+                                          help="HP·생산함수 추세에 적용. 0이면 연장하지 않음. 끝점 보정(전망 연장)을 쓰면 "
+                                               "전망 이후는 중기 성장률 가정으로 잇기 때문에 쓰지 않음.")
+                if has_tail:
+                    cfg["extend"] = 0
                 cand = [q for q in quarters if q.endswith("Q1") or q.endswith("Q4")]
                 cfg["breaks"] = st.multiselect("선형 추세 구조변화 시점", cand,
                                                default=[b_ for b_ in ["1998Q1", "2008Q4"] if b_ in cand], key="pg_breaks")
@@ -257,6 +293,15 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str]:
                                                format_func=lambda x: {"mv": "다변량 HP 필터", "lw": "LW형 준구조모형",
                                                                       "pfmv": "생산함수 다변량 필터", "hp": "실업률 HP 추세"}[x])
             with c:
+                cut_opts = ["none"] + [q for q in quarters if q >= "2015Q1"]
+                cfg["tfp_cut"] = st.selectbox(
+                    "TFP 추세 고정 시점", cut_opts, index=cut_opts.index("2025Q4") if "2025Q4" in cut_opts else 0,
+                    key="pg_tfpcut", format_func=lambda x: "고정 안 함(전 구간 HP)" if x == "none" else f"{x} (이후 성장은 순환으로)",
+                    help="이 분기까지의 자료로만 TFP 추세를 추정하고 그 뒤는 최근 3년 추세 기울기로 연장합니다(두 생산함수모형에 적용). "
+                         "2026년 이후 반도체 호황 성장을 잠재 성장이 아니라 수요 압력(플러스 GDP 갭)으로 보는 판단이며, "
+                         "한국은행 2026년 8월 경제전망의 해석(수요측 압력 확대)과 맞춤. 노동·자본 투입은 그대로 전망 자료를 씀.")
+                if cfg["tfp_cut"] == "none":
+                    cfg["tfp_cut"] = None
                 cfg["pf_cu"] = st.toggle("TFP 추세에서 가동률 효과 제거", value=True, key="pg_cu",
                                          help="TFP 순환 중 제조업 가동률로 설명되는 부분을 걷어낸 뒤 추세를 구함(한국은행 2019).")
                 cfg["pfmv_rho"] = st.select_slider("다변량 필터: 갭 지속성 상한(AR 계수 합)", [0.8, 0.85, 0.9, 0.95], 0.9,
@@ -292,6 +337,9 @@ def _inputs(cfg: dict, show: str) -> dict:
         "생산함수 잠재노동": "인구×참가율×(1−자연실업률)×근로시간" if cfg["pf_labour"] == "lfpr" else "인구×고용률×근로시간",
         "생산함수 자연실업률": nsrc[cfg["pf_nairu"]] if cfg["pf_labour"] == "lfpr" else "–",
         "TFP 가동률 조정": "예" if cfg["pf_cu"] else "아니오",
+        "TFP 추세 고정 시점": cfg.get("tfp_cut") or "고정 안 함",
+        "끝점 보정": (lambda i: f"{i['fc']['title']}, {'전년동기비' if i['mode'] == 'yoy' else '전기비'} 방식, 이후 중기 성장률 {i['tail']}%"
+                  if i else "쓰지 않음")(st.session_state.get("pg_fc_info")),
         "생산함수 다변량 필터 갭 지속성 상한": cfg["pfmv_rho"],
     })
     return out
@@ -767,6 +815,7 @@ def render():
         st.warning("추정 방법을 하나 이상 고르세요.")
         return
     ests, errs = _run(df, json.dumps(cfg, sort_keys=True))
+    df, ests = _trim(df, ests)
     for k, msg in errs.items():
         st.warning(f"{M.METHODS.get(k, k)}: {msg}")
     if not ests:
