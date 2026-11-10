@@ -222,9 +222,22 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str]:
         opts = [k for k in M.METHODS if M.GROUP_OF[k] == g]
         ok = [k for k in opts if k in usable]
         dflt = [k for k in ok if k in BOK4] if preset == "bok4" else ok
+        keys = {k: f"pg_m_{k}_{preset}" for k in opts}
+        for k in ok:                                   # 처음 열 때 기본 선택
+            st.session_state.setdefault(keys[k], k in dflt)
+        n_sel = sum(bool(st.session_state.get(keys[k])) for k in ok)
         with col:
-            chosen += st.multiselect(gname, ok, default=dflt, format_func=lambda k: M.METHODS[k], key=f"pg_methods_{g}_{preset}",
-                                     placeholder="자료가 없어 쓸 수 없음" if not ok else "방법 선택")
+            st.markdown(f"<div style='font-size:0.875rem;margin-bottom:0.25rem'>{gname}</div>", unsafe_allow_html=True)
+            with st.popover(f"{n_sel}/{len(ok)}개 선택" if ok else "자료 없음", width="stretch", disabled=not ok):
+                for k in opts:
+                    if k in ok:
+                        st.checkbox(M.METHODS[k], key=keys[k], help=HELP[k][0] if k in HELP else None)
+                    else:
+                        st.checkbox(M.METHODS[k], value=False, disabled=True, key=keys[k] + "_na",
+                                    help=f"자료 부족: {D.NEEDS[k]}")
+            sel = [k for k in ok if st.session_state.get(keys[k])]
+            chosen += sel
+            st.caption(", ".join(M.METHODS[k] for k in sel) if sel else "선택 없음")
             miss = [k for k in opts if k not in usable]
             if miss:
                 st.caption("자료 부족: " + ", ".join(f"{M.METHODS[k]}({D.NEEDS[k]})" for k in miss))
