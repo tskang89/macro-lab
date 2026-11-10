@@ -35,6 +35,10 @@ from scipy.sparse.linalg import spsolve
 
 from engines.potential import statespace as SS
 
+# 자연실업률 확률보행 충격의 분기 표준편차(%p). 최우추정에 맡기면 오쿤 계수가 작은 한국 자료에서 자연실업률이
+# 실제 실업률을 거의 그대로 따라가므로(실업률 변동을 순환이 아니라 추세로 돌림) 고정한다.
+USTAR_SD = 0.04
+
 METHODS = {
     "linear": "선형 추세(구조변화)",
     "hp": "HP 필터",
@@ -269,7 +273,7 @@ def _inflation(core: pd.Series) -> pd.Series:
     return (core / core.shift(4) - 1) * 100
 
 
-def mv(y: pd.Series, u: pd.Series, core: pd.Series, lam: float = 1600, lam_u: float = 6400,
+def mv(y: pd.Series, u: pd.Series, core: pd.Series, lam: float = 1600, lam_u: float = 50000,
        weight: float = 1.0, max_iter: int = 100) -> Estimate:
     """다변량 HP 필터 (Laxton-Tetlow 계열).
 
@@ -343,7 +347,7 @@ def expected_inflation(df: pd.DataFrame) -> pd.Series:
 
 
 def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: float = 0.03, c: float = 1.0,
-       sy_max: float = 0.25, fit_end: str | None = None) -> Estimate:
+       sy_max: float = 0.25, fit_end: str | None = None, su_star: float = USTAR_SD) -> Estimate:
     """Laubach-Williams(2003)형 준구조모형 (한국은행 권지호 외 2019 준구조모형).
 
       IS곡선     ỹ_t = a1 ỹ_{t-1} + a2 ỹ_{t-2} + (a_r/2) Σ_{j=1,2} (r_{t-j} − r*_{t-j}) + ε1
@@ -351,7 +355,7 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
       오쿤       u_t = u*_t − θ ỹ_t + ε3
       잠재 GDP   y*_t = y*_{t-1} + g_{t-1} + ε4 ,  g_t = g_{t-1} + ε5 ,  σ5 = λ_g σ4
       중립금리   r*_t = c·4g_t + z_t ,  z_t = z_{t-1} + ε6 ,  σ6 = λ_z σ1 / |a_r|
-      자연실업률 u*_t = u*_{t-1} + ε7
+      자연실업률 u*_t = u*_{t-1} + ε7 ,  σ7 = su_star(고정)
     r = 기준금리 − 기대인플레이션(실질 기준금리), π = 근원물가 상승률(전년동기비).
     λ_g·λ_z 는 최우추정의 쏠림(pile-up) 문제를 피하려고 고정(LW 2003 의 중위불편 추정 방식 대신).
     """
@@ -374,7 +378,8 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
 
     def build(x):
         a1, a2, ar, bpi, by, th = x[:6]
-        sIS, spi, sys_, su, sus = np.exp(x[6:11])
+        sIS, spi, sys_, su = np.exp(x[6:10])
+        sus = su_star
         T = np.zeros((m, m))
         T[0, 0] = T[0, 3] = 1
         T[1, 0] = 1
@@ -410,10 +415,9 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
             raise ValueError
         return build(x)
 
-    x0 = np.array([1.2, -0.3, -0.05, 0.8, 0.1, 0.2, np.log(0.5), np.log(0.3), np.log(0.8 * sy_max), np.log(0.2),
-                   np.log(0.1)])
+    x0 = np.array([1.2, -0.3, -0.05, 0.8, 0.1, 0.2, np.log(0.5), np.log(0.3), np.log(0.8 * sy_max), np.log(0.2)])
     bounds = ([(-0.5, 1.7), (-0.95, 0.5), (-1.0, -0.0025), (0.0, 0.99), (0.025, 1.0), (0.01, 1.0)] + [(-6, 2)] * 2
-              + [(-6, np.log(sy_max))] + [(-6, 2)] * 2)
+              + [(-6, np.log(sy_max))] + [(-6, 2)])
     xh, ll, _ = SS.fit(Y[:nf], build_s, x0, bounds)
     st, _, _ = SS.ksmooth(Y, build(xh))
     idx = d.index
@@ -423,12 +427,13 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
     ustar = pd.Series(st[:, 9], index=idx)
     est = _finish("lw", y, ystar)
     a1, a2, ar, bpi, by, th = xh[:6]
-    sd = np.exp(xh[6:11])
+    sd = np.exp(xh[6:10])
     est.params = {"IS: 갭 AR(1) a1": a1, "IS: 갭 AR(2) a2": a2, "IS: 실질금리 갭 계수 a_r": ar,
                   "필립스: 물가 관성 b_π": bpi, "필립스: 갭 계수 b_y": by, "오쿤 계수 θ": th,
                   "IS 충격 표준편차": sd[0], "물가 충격 표준편차": sd[1], "잠재 GDP 충격 표준편차": sd[2],
                   "λ_g(고정)": lam_g, "λ_z(고정)": lam_z, "중립금리의 성장률 계수 c(고정)": c,
-                  "잠재 GDP 수준 충격 표준편차 상한": sy_max,
+                  "잠재 GDP 수준 충격 표준편차 상한": sy_max, "오쿤 잔차 표준편차": sd[3],
+                  "자연실업률 충격 표준편차(고정, 분기 %p)": su_star,
                   "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["Laubach·Williams(2003) 준구조모형을 한국은행 권지호 외(2019)처럼 오쿤의 관계식을 더해 수정한 모형. "
                  "IS곡선(실질금리 갭 → GDP 갭), 필립스곡선(GDP 갭 → 근원물가), 오쿤의 관계식(GDP 갭 → 실업률)을 상태공간모형으로 묶어 "
@@ -436,7 +441,9 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                  "실질금리 = 한국은행 기준금리 − 기대인플레이션(한국은행 소비자동향조사 향후 1년, 2002년 이전은 근원물가 상승률 직전 4분기 평균). "
                  "물가는 농산물·석유류 제외 근원물가 전년동기비. 원논문의 전문가 5년 기대인플레이션 대신 일반인 1년 기대를 씀.",
                  f"잠재성장률 충격과 중립금리 충격의 상대 크기(λ_g={lam_g:g}, λ_z={lam_z:g})는 고정. 값을 키우면 잠재성장률·중립금리가 더 자주 변함. "
-                 f"최우추정이 GDP 변동을 잠재 GDP 수준 충격으로 돌리는 경향이 있어 그 표준편차 상한을 {sy_max:g}%로 둠(상한을 높이면 잠재성장률이 출렁임)."]
+                 f"최우추정이 GDP 변동을 잠재 GDP 수준 충격으로 돌리는 경향이 있어 그 표준편차 상한을 {sy_max:g}%로 둠(상한을 높이면 잠재성장률이 출렁임).",
+                 f"자연실업률 충격 표준편차는 분기 {su_star:g}%p 로 고정. 한국은 오쿤 계수가 작아(GDP 갭 1% → 실업률 0.1%p 미만) "
+                 "최우추정에 맡기면 자연실업률이 실제 실업률을 거의 그대로 따라가고 실업률 갭이 사라짐. 고정값을 키우면 자연실업률이 더 자주 변함."]
     est.extra = {"중립금리·자연실업률": pd.DataFrame({
         "실질 기준금리(%)": r.reindex(idx), "중립금리 추정(%)": rstar, "잠재성장률(연율, %)": 4 * g,
         "실업률(%)": u.reindex(idx), "자연실업률 추정(%)": ustar,
@@ -618,7 +625,7 @@ def _ar2_var(f1: float, f2: float) -> float:
 
 def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str = "2000Q1",
          capital: str = "ksvc", rho_max: float = 0.9, fit_end: str | None = None,
-         tfp_cut: str | None = None) -> Estimate:
+         tfp_cut: str | None = None, su_star: float = USTAR_SD) -> Estimate:
     """생산함수 다변량 필터 (한국은행 다변량필터링모형; 미 연준 Fleischman-Roberts 2011 의 수정형).
 
     관측식 (모두 100·log, 갭 ỹ 는 AR(2))
@@ -627,7 +634,7 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
       e  = e* + β_e ỹ + ε3      (고용률 = 1−실업률)
       h  = h* + β_h ỹ + ε4      (평균 근로시간)
       π  = b_π π_{-1} + (1−b_π) πᵉ + κ ỹ_{-1} + ε5    (필립스곡선)
-    상태식: a*·p*·h* 는 기울기가 확률보행하는 평활 추세(기울기 충격 = 해당 식 충격/√λ), e* 는 확률보행.
+    상태식: a*·p*·h* 는 기울기가 확률보행하는 평활 추세(기울기 충격 = 해당 식 충격/√λ), e* 는 확률보행(충격 표준편차 su_star 고정).
     """
     s = labshare
     k, ksrc = _capital(df, capital)
@@ -650,7 +657,8 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
 
     def build(x):
         f1, f2, bp, be, bh, kap, bpi = x[:7]
-        sc, s1, sp, se, sh, spi, ses, sgp, sgh = np.exp(x[7:16])
+        sc, s1, sp, se, sh, spi, sgp, sgh = np.exp(x[7:15])
+        ses = su_star                                   # e = 100·log(1−u/100) ≈ −u 이므로 같은 %p 단위
         T = np.zeros((m, m))
         T[0, 0], T[0, 1], T[1, 0] = f1, f2, 1
         T[2, 2] = T[2, 3] = T[3, 3] = 1
@@ -678,8 +686,8 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
             raise ValueError
         return build(x)
 
-    x0 = np.array([1.0, -0.2, 0.2, 0.2, 0.1, 0.1, 0.8] + list(np.log([0.6, 0.3, 0.3, 0.2, 0.5, 0.3, 0.1, 0.02, 0.02])))
-    bounds = ([(-0.5, 1.8), (-0.95, 0.5), (0.0, 1.5), (0.0, 1.5), (0.0, 1.5), (0.01, 1.0), (0.0, 0.99)] + [(-7, 2)] * 6 + [(-7, np.log(0.08))]
+    x0 = np.array([1.0, -0.2, 0.2, 0.2, 0.1, 0.1, 0.8] + list(np.log([0.6, 0.3, 0.3, 0.2, 0.5, 0.3, 0.02, 0.02])))
+    bounds = ([(-0.5, 1.8), (-0.95, 0.5), (0.0, 1.5), (0.0, 1.5), (0.0, 1.5), (0.01, 1.0), (0.0, 0.99)] + [(-7, 2)] * 6
               + [(np.log(0.002), np.log(0.04))] * 2)
     xh, ll, _ = SS.fit(Y[:nf], build_s, x0, bounds)
     Ys = Y.copy()
@@ -697,11 +705,11 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                          "노동: 1-자연실업률": s * e_.diff(4), "노동: 근로시간": s * h_.diff(4)})
     comp["잠재성장률(로그 근사)"] = comp.sum(axis=1, min_count=len(comp.columns))
     f1, f2, bp, be, bh, kap, bpi = xh[:7]
-    sd = np.exp(xh[7:16])
+    sd = np.exp(xh[7:15])
     est.params = {"노동소득분배율": s, "갭 AR(1)": f1, "갭 AR(2)": f2, "오쿤: 참가율 β_p": bp, "오쿤: 고용률 β_e": be,
                   "오쿤: 근로시간 β_h": bh, "필립스: 갭 계수 κ": kap, "필립스: 물가 관성 b_π": bpi,
-                  "갭 충격 표준편차": sd[0], "고용률 추세 충격 표준편차": sd[6],
-                  "참가율 추세 기울기 충격 표준편차": sd[7], "근로시간 추세 기울기 충격 표준편차": sd[8],
+                  "갭 충격 표준편차": sd[0], "고용률 추세 충격 표준편차(고정, 분기 %p)": su_star,
+                  "참가율 추세 기울기 충격 표준편차": sd[6], "근로시간 추세 기울기 충격 표준편차": sd[7],
                   "TFP 추세 평활 λ": lam, "갭 지속성 상한(AR 계수 합)": rho_max,
                   "자본투입": ksrc, "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["한국은행 다변량필터링모형(권지호 외 2019; 미 연준 FRB/US 공급부문의 Fleischman·Roberts 2011 모형 수정형)을 따름. "
@@ -710,7 +718,7 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                  "오쿤의 관계식: 경제활동참가율·고용률(1-실업률)·평균 근로시간의 순환 부분이 GDP 갭에 비례. 필립스곡선: 근원물가 상승률이 "
                  "직전 분기 GDP 갭에 반응(기대인플레이션은 소비자동향조사 향후 1년, 2002년 이전은 근원물가 직전 4분기 평균).",
                  f"TFP 추세 기울기 충격 분산은 GDP 갭 분산의 1/λ(λ={lam:g})로 고정해 HP 필터와 같은 평활도를 주고, 참가율·근로시간 추세의 기울기 충격은 "
-                 f"최우추정. 갭이 단위근에 가깝게 추정돼 추세 변화를 흡수하지 않도록 AR 계수 합을 {rho_max:g} 이하로 제한. "
+                 f"최우추정. 고용률 추세(1−자연실업률) 충격은 분기 {su_star:g}%p 로 고정(추정에 맡기면 자연실업률이 실제 실업률을 따라감). 갭이 단위근에 가깝게 추정돼 추세 변화를 흡수하지 않도록 AR 계수 합을 {rho_max:g} 이하로 제한. "
                  "원논문의 공급충격 변수와 노동의 질은 넣지 않음.",
                  f"자본투입: {ksrc}(추세로 간주). " + (HOURS_NOTE if has_h else "근로시간 자료가 없어 근로시간 식은 뺌.")]
     if tfp_cut and pd.Period(tfp_cut, freq="Q") < idx[-1]:

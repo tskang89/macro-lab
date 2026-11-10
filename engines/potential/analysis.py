@@ -20,7 +20,7 @@ DEFAULT_CFG = {
     "bn_p": 8,
     "bn_delta": 0.2,
     "bn_window": 40,
-    "mv_lam_u": 6400.0,
+    "mv_lam_u": 50000.0,
     "mv_weight": 1.0,
     "svar_p": 4,
     "lw_lam_g": 0.06,
@@ -34,6 +34,7 @@ DEFAULT_CFG = {
     "pfmv_rho": 0.9,
     "avg_mode": "group",
     "tfp_cut": None,
+    "ustar_sd": M.USTAR_SD,
 }
 NEEDS_OTHER = ("lw", "mv", "svar", "pf", "pfmv")
 
@@ -84,12 +85,13 @@ def run(df: pd.DataFrame, cfg: dict) -> tuple[dict[str, M.Estimate], dict[str, s
         if k == "mv":
             return M.mv(y_full, df["urate"], df["core"], c["lam"], c["mv_lam_u"], c["mv_weight"])
         if k == "lw":
-            return M.lw(df, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"], sy_max=c["lw_sy_max"], fit_end=fit_end)
+            return M.lw(df, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"], sy_max=c["lw_sy_max"], fit_end=fit_end,
+                        su_star=c["ustar_sd"])
         if k == "svar":
             return M.svar(y_full, df["urate"], c["svar_p"])
         if k == "pfmv":
             return M.pfmv(df, c["pf_labshare"], c["lam"], capital=c["pf_capital"], rho_max=c["pfmv_rho"], fit_end=fit_end,
-                          tfp_cut=c["tfp_cut"])
+                          tfp_cut=c["tfp_cut"], su_star=c["ustar_sd"])
         if k == "pf":
             nairu = None
             if c["pf_labour"] == "lfpr" and c["pf_nairu"] in nairu_src and av.get(c["pf_nairu"], False):

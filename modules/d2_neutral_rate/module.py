@@ -73,7 +73,8 @@ def _run(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict, dict
             elif k == "uc":
                 e = N.uc(base, c["uc_smax"])
             elif k == "lw":
-                e = N.lw(basex, fit_end=last if F.FC_COL in dfx.columns else None, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"])
+                e = N.lw(basex, fit_end=last if F.FC_COL in dfx.columns else None, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"],
+                         su_star=c.get("ustar_sd", M.USTAR_SD))
             elif k == "var":
                 e = N.var_forecast(base, c["var_window"], c["var_p"], c["var_h"])
             elif k == "market":
@@ -149,6 +150,10 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str, pd.DataFrame]:
         with b:
             cfg["lw_lam_g"] = st.select_slider("LW: λ_g", [0.02, 0.04, 0.06, 0.08, 0.1], 0.06, key="nr_lwg")
             cfg["lw_lam_z"] = st.select_slider("LW: λ_z (기타 요인 z 변동)", [0.0, 0.01, 0.03, 0.05, 0.1], 0.03, key="nr_lwz")
+            cfg["ustar_sd"] = st.select_slider("LW: 자연실업률 변동 크기(분기 %p)", [0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.12],
+                                               M.USTAR_SD, key="nr_ustar",
+                                               help="잠재성장률 화면과 같은 값이 기본. LW 중립금리는 이 값에 민감합니다: 키우면 자연실업률이 "
+                                                    "실제 실업률을 따라가고 오쿤 계수가 작아지며, 중립금리의 기타 요인 z 가 낮아지는 쪽으로 움직입니다.")
             cfg["tp"] = st.slider("시장금리: 기간 프리미엄 가정(%p)", 0.0, 2.0, 0.8, step=0.1, key="nr_tp",
                                   help="5년 후 5년 선도금리에 들어 있는 기간 프리미엄. 모형으로 추정하지 않은 가정치이며 수준을 그대로 옮김.")
         with c:
@@ -162,7 +167,7 @@ def _inputs(cfg: dict, show: str) -> dict:
     return {"추정 방법": ", ".join(N.METHODS[k] for k in cfg["methods"]),
             "기대인플레이션": "근원물가 직전 4분기 평균" if cfg["pie"] == "core" else "소비자 기대인플레이션(1년)",
             "끝점 보정": "한국은행 경제전망" if cfg["fc"] else "없음", "표시 시작": show, "HP λ": cfg["lam"],
-            "UC 충격 상한": cfg["uc_smax"], "LW λ_g·λ_z": f"{cfg['lw_lam_g']}·{cfg['lw_lam_z']}",
+            "UC 충격 상한": cfg["uc_smax"], "LW λ_g·λ_z·자연실업률 변동": f"{cfg['lw_lam_g']}·{cfg['lw_lam_z']}·{cfg['ustar_sd']}",
             "기간 프리미엄 가정(%p)": cfg["tp"], "VAR 창·시차·시계": f"{cfg['var_window']}·{cfg['var_p']}·{cfg['var_h']}"}
 
 

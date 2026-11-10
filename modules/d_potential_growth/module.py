@@ -290,10 +290,16 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str]:
                 cfg["lw_sy_max"] = st.select_slider("잠재 GDP 수준 충격 표준편차 상한(%)", [0.1, 0.15, 0.2, 0.25, 0.35, 0.5, 1.0],
                                                     0.25, key="pg_lwsy",
                                                     help="높일수록 GDP 변동이 잠재 GDP 로 흡수돼 잠재성장률이 출렁이고 갭이 작아짐.")
+                cfg["ustar_sd"] = st.select_slider(
+                    "자연실업률 변동 크기(분기 충격 표준편차, %p)", [0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1], M.USTAR_SD,
+                    key="pg_ustar",
+                    help="LW형 준구조모형과 생산함수 다변량 필터에 함께 적용. 한국은 오쿤 계수가 작아 최우추정에 맡기면 "
+                         "자연실업률이 실제 실업률을 거의 그대로 따라가므로 고정합니다. 키울수록 자연실업률이 실제 실업률에 가까워짐.")
             with b:
                 st.markdown("**다변량 HP 필터**")
                 cfg["mv_weight"] = st.select_slider("물가·고용 정보 가중 배수", [0.25, 0.5, 1.0, 2.0, 4.0], 1.0, key="pg_mvw")
-                cfg["mv_lam_u"] = st.number_input("자연실업률 λ", 400.0, 100000.0, 6400.0, step=400.0, key="pg_mvl")
+                cfg["mv_lam_u"] = st.number_input("자연실업률 λ", 1600.0, 400000.0, 50000.0, step=5000.0, key="pg_mvl",
+                                                  help="클수록 자연실업률이 완만해짐. 6,400 이면 실제 실업률을 거의 따라감.")
             with c:
                 st.markdown("**구조 VAR**")
                 cfg["svar_p"] = st.slider("VAR 시차", 1, 8, 4, key="pg_svp")
@@ -351,6 +357,7 @@ def _inputs(cfg: dict, show: str) -> dict:
         "CF 최소 주기": cfg["cf_high"], "Hamilton h·p": f"{cfg['ham_h']}·{cfg['ham_p']}",
         "BN δ·차수·이동기간": f"{cfg['bn_delta']}·{cfg['bn_p']}·{cfg['bn_window']}",
         "LW λ_g·λ_z·수준충격 상한": f"{cfg['lw_lam_g']}·{cfg['lw_lam_z']}·{cfg['lw_sy_max']}",
+        "자연실업률 충격 표준편차(LW·생산함수 다변량 필터, 분기 %p)": cfg.get("ustar_sd", M.USTAR_SD),
         "다변량 HP 가중 배수·자연실업률 λ": f"{cfg['mv_weight']}·{cfg['mv_lam_u']:g}",
         "구조 VAR 시차": cfg["svar_p"],
         "생산함수 노동소득분배율": cfg["pf_labshare"],
