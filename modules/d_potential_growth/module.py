@@ -97,6 +97,13 @@ def _gname(k: str) -> str:
 
 
 BOK4 = ("hp", "lw", "pfmv", "pf")
+# 대상별 고정 색 번호(차트 팔레트 슬롯): 어느 보기에서든 같은 방법은 같은 색
+SLOT = {"hp": 0, "lw": 1, "pf": 2, "linear": 3, "hp1": 4, "hamilton": 5, "cf": 6, "bn": 7, "uc": 2,
+        "mv": 4, "svar": 6, "pfmv": 6, "avg_stat": 0, "avg_semi": 1, "avg_pf": 2}
+
+
+def _slots(ests) -> dict[str, int]:
+    return {e.name: SLOT[k] for k, e in ests.items() if k in SLOT}
 
 
 def _trim(df, ests):
@@ -314,7 +321,8 @@ def _params_table(ests: dict[str, M.Estimate]) -> pd.DataFrame:
     rows = []
     for e in ests.values():
         for k, v in e.params.items():
-            rows.append({"방법": e.name, "항목": k, "값": float(v) if isinstance(v, (int, float, np.floating)) else str(v)})
+            rows.append({"방법": e.name, "항목": k,
+                         "값": f"{float(v):,.4g}" if isinstance(v, (int, float, np.floating)) else str(v)})
     return pd.DataFrame(rows, columns=["방법", "항목", "값"])
 
 
@@ -439,9 +447,10 @@ def compare_tab(df, ests, cfg, show, sources):
             ptab["최소"], ptab["최대"] = gpa[names].min(axis=1), gpa[names].max(axis=1)
     rng = "음영: 표시 방법 간 최소~최대" if band else ""
     st.plotly_chart(charts.ts_lines(gtab, x, ["실제 성장률"] + lines, "실제 성장률과 잠재성장률", "%", 440, step,
-                                    emphasize=emph, dashed=("실제 성장률",), band=band, shade=sh), width="stretch")
+                                    emphasize=emph, dashed=("실제 성장률",), band=band, shade=sh,
+                                    slots=_slots(ests)), width="stretch")
     st.plotly_chart(charts.ts_lines(ptab, x, lines, "GDP 갭 (실제 GDP 가 잠재 GDP 를 웃도는 정도)", "%", 400, step,
-                                    emphasize=emph, band=band, shade=sh), width="stretch")
+                                    emphasize=emph, band=band, shade=sh, slots=_slots(ests)), width="stretch")
     if rng:
         st.caption(rng)
     order = ["연도", "구분", "실제 성장률"] + [ests[k].name for k in base] + [ests[k].name for k in gavg] + ([avg] if avg else [])

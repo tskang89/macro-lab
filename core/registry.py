@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE_DIR = os.path.join(ROOT, "modules")
 
 GROUP_ORDER = ["", "산업연관 분석", "성장 분석", "구조 모형", "도움말"]
+PAGES: dict = {}          # slug → st.Page (처음 화면의 바로가기용)
 
 
 def discover() -> list[dict]:
@@ -43,5 +44,6 @@ def navigation(mods: list[dict]):
         title = meta["title"] + (" (준비 중)" if meta.get("status") == "planned" else "")
         page = st.Page(meta["render"], title=title, icon=meta.get("icon"), url_path=meta["slug"],
                        default=meta.get("default", False))
+        PAGES[meta["slug"]] = page
         pages.setdefault(meta["group"], []).append(page)
     return st.navigation(pages)

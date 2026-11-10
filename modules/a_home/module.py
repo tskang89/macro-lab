@@ -1,9 +1,15 @@
 import streamlit as st
 
+from core.registry import PAGES
 from core.ui import footer
 
 META = {"title": "처음 화면", "group": "", "order": 0, "icon": ":material/home:", "status": "ready",
         "slug": "home", "default": True}
+
+
+def _go(slug: str, label: str):
+    if slug in PAGES:
+        st.page_link(PAGES[slug], label=label, icon=":material/arrow_forward:")
 
 
 def render():
@@ -21,6 +27,7 @@ def render():
                 "- **가격 파급**: 환율·유가·수입물가·임금 → 산업별 가격, 소비자물가\n"
                 "- **공급 차질**: 특정 산업 생산 차질 → 전방·후방 파급\n"
                 "- **연관 구조**: 유발계수, 영향력·감응도계수, 가설추출, 연도 비교")
+            _go("io-domestic", "산업연관표 분석 열기")
     with c2:
         with st.container(border=True):
             st.subheader("국제 산업연관표 분석")
@@ -31,6 +38,7 @@ def render():
                 "- **공급망 차질**: 특정 국가·산업 차질 → 하류·상류 파급\n"
                 "- **가격 파급**: 에너지 등 가격 상승 → 각국 생산자·소비자 물가\n"
                 "- **GVC·부가가치무역**: 수출의 부가가치 원천, 참여도, 부가가치 기준 교역")
+            _go("io-international", "국제 산업연관표 분석 열기")
     with st.container(border=True):
         st.subheader("잠재성장률 추정")
         st.markdown(
@@ -38,7 +46,9 @@ def render():
             "- **통계모형 7가지**: 선형 추세, HP(양방향·실시간), 대역통과(CF), Hamilton 회귀, Beveridge-Nelson, 비관측 요인 모형\n"
             "- **준구조모형 3가지**: LW형 준구조모형(IS·필립스·오쿤), 다변량 HP 필터, 구조 VAR\n"
             "- **생산함수모형 2가지**: 생산함수 접근(인구·참가율·자연실업률·근로시간, 자본서비스), 생산함수 다변량 필터(FRB/US형)\n"
-            "- **비교·분해**: 실제 성장률·잠재성장률·GDP 갭을 방법별·모형군별로, TFP·자본·노동 요인 기여도, 자연실업률·중립금리")
+            "- **비교·분해**: 실제 성장률·잠재성장률·GDP 갭을 방법별·모형군별로, TFP·자본·노동 요인 기여도, 자연실업률·중립금리\n"
+            "- **끝점 보정**: 한국은행 경제전망(분기 경로·반기·연간)으로 자료를 연장해 추정")
+        _go("potential-growth", "잠재성장률 추정 열기")
     st.subheader("추가 예정")
     c4, c5 = st.columns(2)
     c4.info("**DSGE 모형**\n\n신케인즈 3방정식·소규모개방경제 등. 모수·정책규칙을 바꿔 충격반응 계산")
