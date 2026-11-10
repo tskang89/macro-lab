@@ -6,7 +6,7 @@ import streamlit as st
 
 from core import charts
 from core.result import ExcelChart, Result
-from core.ui import excel_button, footer, notes_box, page_header, scenario_io, summary_cards, table
+from core.ui import editor_hint, excel_button, footer, notes_box, num_col, page_header, pick_col, scenario_io, summary_cards, table
 from engines.io import icio as I
 from engines.io.icio_meta import COUNTRY_GROUPS, COUNTRY_KO, FD_KO, INDUSTRY_KO
 
@@ -102,12 +102,13 @@ def demand_tab(t: I.ICIO, focus: str):
                "산업을 고르면 그 산업 생산품에 대한 수요만 바뀝니다.")
     df_in = pd.DataFrame([{"수요국": _clab(c), "항목": FD_LABEL[f], "원산지": o, "산업": _ilab(s) if s != ALL_IND else ALL_IND, "변화율(%)": v}
                           for c, f, o, s, v in st.session_state[key]])
+    editor_hint()
     ed = st.data_editor(df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor", column_config={
-        "수요국": st.column_config.SelectboxColumn("수요국", options=[_clab(c) for c in copts], required=True, width="medium"),
-        "항목": st.column_config.SelectboxColumn("항목", options=[FD_LABEL[f] for f in FD_OPTS], required=True),
-        "원산지": st.column_config.SelectboxColumn("원산지", options=["전체", "국산", "수입"], required=True),
-        "산업": st.column_config.SelectboxColumn("산업", options=[ALL_IND] + [_ilab(s) for s in t.industries], required=True, width="medium"),
-        "변화율(%)": st.column_config.NumberColumn("변화율(%)", format="%.2f", required=True)})
+        "수요국": pick_col("수요국", options=[_clab(c) for c in copts], required=True, width="medium"),
+        "항목": pick_col("항목", options=[FD_LABEL[f] for f in FD_OPTS], required=True),
+        "원산지": pick_col("원산지", options=["전체", "국산", "수입"], required=True),
+        "산업": pick_col("산업", options=[ALL_IND] + [_ilab(s) for s in t.industries], required=True, width="medium"),
+        "변화율(%)": num_col("변화율(%)", format="%.2f", required=True)})
     lab2c = {_clab(c): c for c in copts}
     lab2f = {v: k for k, v in FD_LABEL.items()}
     lab2s0 = {_ilab(s): s for s in t.industries}
@@ -258,10 +259,11 @@ def supply_tab(t: I.ICIO, focus: str):
         st.session_state.pop(f"{key}_editor", None)
         st.rerun()
     df_in = pd.DataFrame([{"국가": _clab(c), "산업": _ilab(s), "생산 차질률(%)": v} for c, s, v in st.session_state[key]])
+    editor_hint()
     ed = st.data_editor(df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor", column_config={
-        "국가": st.column_config.SelectboxColumn("국가", options=[_clab(c) for c in clist], required=True),
-        "산업": st.column_config.SelectboxColumn("산업", options=[_ilab(s) for s in t.industries], required=True, width="large"),
-        "생산 차질률(%)": st.column_config.NumberColumn("생산 차질률(%)", min_value=0.0, max_value=100.0, format="%.1f")})
+        "국가": pick_col("국가", options=[_clab(c) for c in clist], required=True),
+        "산업": pick_col("산업", options=[_ilab(s) for s in t.industries], required=True, width="large"),
+        "생산 차질률(%)": num_col("생산 차질률(%)", min_value=0.0, max_value=100.0, format="%.1f")})
     lab2c = {_clab(c): c for c in clist}
     lab2s = {_ilab(s): s for s in t.industries}
     cuts = {}
@@ -324,10 +326,11 @@ def price_tab(t: I.ICIO, focus: str):
         st.rerun()
     st.caption("고른 국가·산업의 생산자가격을 외생으로 올리면, 그 제품을 직·간접으로 쓰는 다른 산업의 가격이 비용 전가로 오릅니다.")
     df_in = pd.DataFrame([{"국가": _clab(c), "산업": s if s == MANUF else _ilab(s), "가격 변화율(%)": v} for c, s, v in st.session_state[key]])
+    editor_hint()
     ed = st.data_editor(df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor", column_config={
-        "국가": st.column_config.SelectboxColumn("국가", options=[_clab(c) for c in copts], required=True),
-        "산업": st.column_config.SelectboxColumn("산업", options=[MANUF] + [_ilab(s) for s in t.industries], required=True, width="large"),
-        "가격 변화율(%)": st.column_config.NumberColumn("가격 변화율(%)", format="%.1f")})
+        "국가": pick_col("국가", options=[_clab(c) for c in copts], required=True),
+        "산업": pick_col("산업", options=[MANUF] + [_ilab(s) for s in t.industries], required=True, width="large"),
+        "가격 변화율(%)": num_col("가격 변화율(%)", format="%.1f")})
     lab2c = {_clab(c): c for c in copts}
     lab2s = {_ilab(s): s for s in t.industries}
     fixed = {}

@@ -7,7 +7,7 @@ import streamlit as st
 
 from core import charts
 from core.result import ExcelChart, Result
-from core.ui import excel_button, footer, notes_box, page_header, scenario_io, summary_cards, table
+from core.ui import editor_hint, excel_button, footer, notes_box, num_col, page_header, pick_col, scenario_io, summary_cards, table
 from engines.io import domestic as D
 from engines.io.classify import ENERGY_IMPORT
 
@@ -94,13 +94,14 @@ def demand_tab(t: D.KrIO, level: str):
     st.caption("% : 해당 부문·항목 최종수요(국산+수입)의 증감률.  십억원 : 증감액(국산+수입). "
                "‘전 부문’ + 십억원이면 그 항목의 부문 구성비대로 나눕니다. 여러 줄은 합산됩니다.")
     df_in = pd.DataFrame(st.session_state[key], columns=["부문", "최종수요 항목", "단위", "크기"])
+    editor_hint()
     edited = st.data_editor(
         df_in, num_rows="dynamic", width="stretch", key=f"{key}_editor",
         column_config={
-            "부문": st.column_config.SelectboxColumn("부문", options=[D.ALL] + labels, required=True, width="large"),
-            "최종수요 항목": st.column_config.SelectboxColumn("최종수요 항목", options=[D.FD_ALL] + D.FD_NAMES, required=True),
-            "단위": st.column_config.SelectboxColumn("단위", options=["%", "십억원"], required=True),
-            "크기": st.column_config.NumberColumn("크기", format="%.2f", required=True),
+            "부문": pick_col("부문", options=[D.ALL] + labels, required=True, width="large"),
+            "최종수요 항목": pick_col("최종수요 항목", options=[D.FD_ALL] + D.FD_NAMES, required=True),
+            "단위": pick_col("단위", options=["%", "십억원"], required=True),
+            "크기": num_col("크기", format="%.2f", required=True),
         })
     edited = edited.dropna()
     scenario_io(edited.to_dict("records"), key, (f"{key}_editor",), "충격")
@@ -165,12 +166,13 @@ def price_tab(t: D.KrIO, level: str):
     tax = c3.number_input("순생산물세 상승률(%, 전 부문)", value=0.0, step=1.0, key=f"{key}_tax")
     with st.expander("부문별 수입가격·부가가치 개별 충격 (선택)"):
         st.caption("여기 넣은 값은 위의 공통 충격에 더해집니다.")
+        editor_hint()
         ed = st.data_editor(pd.DataFrame(columns=["부문", "항목", "변화율(%)"]), num_rows="dynamic",
                             width="stretch", key=f"{key}_editor",
                             column_config={
-                                "부문": st.column_config.SelectboxColumn("부문", options=labels, required=True, width="large"),
-                                "항목": st.column_config.SelectboxColumn("항목", options=["수입가격"] + D.VA_NAMES, required=True),
-                                "변화율(%)": st.column_config.NumberColumn("변화율(%)", format="%.2f", required=True)})
+                                "부문": pick_col("부문", options=labels, required=True, width="large"),
+                                "항목": pick_col("항목", options=["수입가격"] + D.VA_NAMES, required=True),
+                                "변화율(%)": num_col("변화율(%)", format="%.2f", required=True)})
     passthrough = st.slider("비용 상승의 국내 가격 전가율(%)", 0, 100, 100, key=f"{key}_pt",
                             help="레온티에프 가격모형은 100%(완전 전가)를 가정합니다. 낮추면 결과가 비례해 줄어듭니다.") / 100
 
@@ -230,11 +232,12 @@ def supply_tab(t: D.KrIO, level: str):
     key = f"dom_supply_{level}"
     st.markdown("##### 생산 차질")
     default = {"대분류": "C09", "중분류": "31"}[level]
+    editor_hint()
     ed = st.data_editor(pd.DataFrame([{"부문": code2lab[default], "생산 차질률(%)": 10.0}]), num_rows="dynamic",
                         width="stretch", key=f"{key}_editor",
                         column_config={
-                            "부문": st.column_config.SelectboxColumn("부문", options=labels, required=True, width="large"),
-                            "생산 차질률(%)": st.column_config.NumberColumn("생산 차질률(%)", min_value=0.0, max_value=100.0, format="%.1f")})
+                            "부문": pick_col("부문", options=labels, required=True, width="large"),
+                            "생산 차질률(%)": num_col("생산 차질률(%)", min_value=0.0, max_value=100.0, format="%.1f")})
     cut = np.zeros(t.n)
     for r in ed.dropna().to_dict("records"):
         cut[t.codes == _code(r["부문"], lab2code)] = r["생산 차질률(%)"]

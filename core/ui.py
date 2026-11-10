@@ -104,3 +104,22 @@ def scenario_io(current, load_into: str, reset_keys: tuple[str, ...] = (), label
 def footer():
     st.divider()
     st.caption(DISCLAIMER)
+
+
+PICK_HELP = "칸을 두 번 누르면 목록이 펼쳐집니다. 글자를 쳐서 찾을 수도 있습니다."
+NUM_HELP = "칸을 두 번 누르고 숫자를 입력합니다."
+
+
+def pick_col(label: str, **kw):
+    """data_editor 의 목록 선택 열. 표 안에서는 화살표가 안 보이므로 머리글에 ▼ 를 붙인다."""
+    return st.column_config.SelectboxColumn(f"{label} ▼", help=kw.pop("help", PICK_HELP), **kw)
+
+
+def num_col(label: str, **kw):
+    """data_editor 의 숫자 입력 열. 머리글에 ✎ 를 붙인다."""
+    return st.column_config.NumberColumn(f"{label} ✎", help=kw.pop("help", NUM_HELP), **kw)
+
+
+def editor_hint():
+    st.caption("▼ 열은 목록에서 고르고, ✎ 열은 숫자를 입력합니다(칸을 두 번 누름). "
+               "맨 아래 빈 줄을 누르면 줄이 추가되고, 줄 왼쪽을 골라 Delete 키로 지웁니다.")
