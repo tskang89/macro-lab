@@ -80,6 +80,9 @@ def _style(fig: go.Figure, title: str = "", height: int = 400, legend: bool = Tr
     fig.update_yaxes(**ax)
     if unit is not None:
         fig.update_yaxes(title_text=unit)
+    n_leg = sum(1 for tr in fig.data if tr.showlegend is not False)
+    if legend and n_leg > 6:                     # 범례가 여러 줄이면 제목과 겹치지 않게 그림 아래로
+        fig.update_layout(legend=dict(y=-0.08, yanchor="top"), margin=dict(t=48 if title else 16))
     return fig
 
 

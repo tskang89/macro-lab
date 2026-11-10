@@ -11,6 +11,7 @@
   capu       제조업 평균가동률 (%)                                 901Y025 / I31A
   rate       한국은행 기준금리 (분기 평균, 연%)                    722Y001 / 0101000
   pie        일반인 향후 1년 기대인플레이션 (분기 평균, %)          511Y003 / FMB   (2002Q1~)
+  y3,y5,y10  국고채 3·5·10년 수익률 (분기 평균, 연%)               721Y001 / 5020000·5040000·5050000
 연간 자료 → 분기 보간
   capital    실질 생산자본스톡 (고정자산, 연말, 십억원)            291Y504 / 101
              분기값은 연말 잔액을 로그 선형 보간(분기말 기준). 마지막 연말 이후는 직전 3년 평균 증가율로 연장.
@@ -165,6 +166,8 @@ def main():
     df = df.loc[df.index <= gdp.index[-1]]
     df["capital"] = interp_capital(capa, df.index)
     df["rate"], df["pie"] = rate, pie
+    for col, item in (("y3", "5020000"), ("y5", "5040000"), ("y10", "5050000")):
+        df[col] = q_index(fetch("721Y001", "Q", "1995Q1", "2030Q4", item))
     last_q = gdp.index[-1]
     ks = extend_annual(ksvc_a, last_q.year)
     df["ksvc"] = denton(ks, int(ks.index[0]), int(ks.index[-1])).reindex(df.index)
