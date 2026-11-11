@@ -10,6 +10,7 @@ N = 국가수 × 산업수. 행·열은 국가별 산업 블록 순서.
   supply_effect   : 국가·산업 생산 차질 → 전방(Ghosh)·후방(레온티에프)
   price_effect    : 특정 국가·산업 가격을 외생으로 올림 → 나머지 가격(비용 전가), 각국 물가
   gvc_indicators  : 수출의 부가가치 원천(DVA·FVA), 전방 참여(DVX), 부가가치 기준 교역
+  kww             : 총수출 부가가치 분해(KWW 2014: VAX·RDV·FVA·PDC)와 전방·후방 GVC 참여도
 """
 from __future__ import annotations
 
@@ -491,6 +492,72 @@ def gvc_indicators(t: ICIO) -> pd.DataFrame:
     df["부가가치 수출/총수출(%)"] = np.where(gross > 0, df["부가가치 수출(10억 달러)"] * 1e3 / gross * 100, 0)
     df["GDP(10억 달러)"] = t.va_country / 1e3
     df["수출/GDP(%)"] = gross / t.va_country * 100
+    return df
+
+
+KWW_COLS = ["부가가치 수출: 최종재", "부가가치 수출: 중간재", "귀환 국내 부가가치(RDV)",
+            "해외 부가가치(FVA): 최종재", "해외 부가가치(FVA): 중간재", "국내 이중계산(DDC)", "해외 이중계산(FDC)"]
+
+
+@lru_cache(maxsize=2)
+def kww(edition: str, year: str) -> pd.DataFrame:
+    """총수출의 부가가치 분해 (Koopman·Wang·Wei 2014, 국가 단위).
+
+    총수출 E_s = VAX + RDV + FVA + PDC
+      VAX (부가가치 수출) : s 국 부가가치 중 외국 최종수요에 흡수되는 것 = Σ_{r≠s} v_s Σ_t B_st Y_tr
+          └ 최종재 경로 = v_s L_ss Y_s,수출(최종재),  중간재 경로 = 나머지
+      RDV (귀환 국내 부가가치) : 수출됐다가 수입품에 체화돼 s 국 최종수요로 돌아오는 것
+          = v_s L_ss E_s − VAX   (v_s L_ss E_s: 처음 수출될 때 한 번만 센 국내 부가가치, Borin·Mancini 2019 원천 기준)
+      FVA (해외 부가가치) : Σ_{t≠s} v_t B_ts [Y_s,수출 + Σ_{r≠s} A_sr L_rr Y_rr]   (KWW 8·9항)
+      PDC (순수 이중계산) : 국내 DDC = v_s (B_ss − L_ss) E_s,  해외 FDC = 해외 부가가치 함량 − FVA
+    B = 전체 레온티에프 역행렬, L_ss = (I − A_ss)^-1 (국내 블록만의 역행렬).
+    """
+    t = load(edition, year)
+    S, C = t.S, t.C
+    B = t.Lmul(np.eye(t.N))                       # 전체 역행렬 (N×N), 이 함수 안에서만 씀
+    vB = t.v @ B
+    VAX_, VAFD, _ = _vax(edition, year)
+    vax = VAFD.sum(1) - np.diag(VAFD)
+    A = t.A
+    # 각국의 국내 역행렬 L_rr 과 L_rr Y_rr (자국 최종수요 중 자국 생산품)
+    Lloc, g = [], np.zeros(t.N)
+    for r in range(C):
+        sl = slice(r * S, (r + 1) * S)
+        Lr = np.linalg.inv(np.eye(S) - A[sl, sl])
+        Lloc.append(Lr)
+        g[sl] = Lr @ t.Yd[sl, r]
+    rows = []
+    for s_ in range(C):
+        sl = slice(s_ * S, (s_ + 1) * S)
+        vs = t.v[sl]
+        Es = t.exports[sl]
+        yexp = t.Yd[sl].sum(1) - t.Yd[sl, s_]
+        Bss = B[sl, sl]
+        dc = vs @ Bss @ Es
+        dva_src = vs @ Lloc[s_] @ Es
+        dva_fin = vs @ Lloc[s_] @ yexp
+        fv = vB[sl] - vs @ Bss                     # 해외 부가가치 승수 Σ_{t≠s} v_t B_ts
+        w = A[sl] @ g - A[sl, sl] @ g[sl]           # Σ_{r≠s} A_sr L_rr Y_rr
+        fva_fin, fva_int = fv @ yexp, fv @ w
+        fc = Es.sum() - dc
+        rows.append([Es.sum(), dva_fin, vax[s_] - dva_fin, dva_src - vax[s_], fva_fin, fva_int,
+                     dc - dva_src, fc - fva_fin - fva_int])
+    del B
+    df = t.country_frame()
+    out = pd.DataFrame(rows, columns=["총수출"] + KWW_COLS)
+    for c in out.columns:
+        df[c + "(백만 달러)"] = out[c].to_numpy()
+    E = out["총수출"].to_numpy()
+    sh = lambda a: np.where(E > 0, a / np.where(E > 0, E, 1) * 100, 0.0)  # noqa: E731
+    df["부가가치 수출(VAX) 비중(%)"] = sh(out[KWW_COLS[0]] + out[KWW_COLS[1]])
+    df["귀환 국내 부가가치(RDV) 비중(%)"] = sh(out[KWW_COLS[2]])
+    df["해외 부가가치(FVA) 비중(%)"] = sh(out[KWW_COLS[3]] + out[KWW_COLS[4]])
+    df["순수 이중계산(PDC) 비중(%)"] = sh(out[KWW_COLS[5]] + out[KWW_COLS[6]])
+    # GVC 참여도 (Koopman 외 2010): 후방 = 수출 속 해외 부가가치 함량, 전방 = 자국 부가가치 중 다른 나라 수출에 들어간 것
+    VAX = VAX_
+    df["후방 참여도(%)"] = sh(out[KWW_COLS[3]] + out[KWW_COLS[4]] + out[KWW_COLS[6]])
+    df["전방 참여도(%)"] = sh(VAX.sum(1) - np.diag(VAX))
+    df["GVC 참여도(%)"] = df["후방 참여도(%)"] + df["전방 참여도(%)"]
     return df
 
 

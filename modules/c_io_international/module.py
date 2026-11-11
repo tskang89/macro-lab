@@ -1,6 +1,7 @@
 """국제 산업연관표 분석 (OECD ICIO)."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -395,11 +396,19 @@ def _gvc_all(ed: str, yr: str) -> pd.DataFrame:
     return I.gvc_indicators(_load(ed, yr))
 
 
-@st.cache_data(show_spinner="GVC 지표 추이를 계산하는 중…(연도마다 1~2초)")
+@st.cache_data(show_spinner="총수출 부가가치 분해(KWW)를 계산하는 중…(3초 안팎)")
+def _kww(ed: str, yr: str) -> pd.DataFrame:
+    return I.kww(ed, yr)
+
+
+KWW_SHARE = ["부가가치 수출(VAX) 비중(%)", "귀환 국내 부가가치(RDV) 비중(%)", "해외 부가가치(FVA) 비중(%)", "순수 이중계산(PDC) 비중(%)"]
+
+
+@st.cache_data(show_spinner="GVC 지표 추이를 계산하는 중…(연도마다 3~4초)")
 def _gvc_series(ed: str, years: tuple[str, ...], country: str) -> pd.DataFrame:
     rows = []
     for y in years:
-        g = I.gvc_indicators(I.load(ed, y))
+        g = I.kww(ed, y)
         r = g[g["국가코드"] == country].iloc[0].to_dict()
         r["연도"] = y
         rows.append(r)
@@ -408,9 +417,31 @@ def _gvc_series(ed: str, years: tuple[str, ...], country: str) -> pd.DataFrame:
 
 def gvc_tab(t: I.ICIO, focus: str, years: list[str]):
     g = _gvc_all(t.edition, t.year)
+    k = _kww(t.edition, t.year)
     fr = g[g["국가코드"] == focus].iloc[0]
-    summary_cards({k: fr[k] for k in ["총수출(10억 달러)", "국내 부가가치(DVA) 비중(%)", "해외 부가가치(FVA) 비중(%)",
-                                      "전방 참여(DVX) 비중(%)", "GVC 참여도(%)"]}, per_row=5, signed=False)
+    kr = k[k["국가코드"] == focus].iloc[0]
+    card = {"총수출(10억 달러)": fr["총수출(10억 달러)"], **{c: kr[c] for c in KWW_SHARE},
+            "후방 참여도(%)": kr["후방 참여도(%)"], "전방 참여도(%)": kr["전방 참여도(%)"], "GVC 참여도(%)": kr["GVC 참여도(%)"]}
+    summary_cards(card, per_row=4, signed=False)
+    st.markdown("##### 총수출의 부가가치 분해 (KWW)")
+    st.caption("총수출 = 부가가치 수출(국내 부가가치가 외국 최종수요에 흡수) + 귀환 국내 부가가치(수출됐다가 수입품에 담겨 되돌아와 국내에서 쓰임) "
+               "+ 해외 부가가치 + 순수 이중계산(중간재가 국경을 여러 번 넘으며 두 번 이상 세어진 부분). "
+               "후방 참여도 = 수출 속 해외 부가가치 함량(FVA+해외 이중계산), 전방 참여도 = 자국 부가가치 중 다른 나라 수출에 들어간 것.")
+    kcmp = st.multiselect("비교 국가", [_clab(c) for c in t.countries if c != "ROW"],
+                          default=[_clab(c) for c in dict.fromkeys([focus, "KOR", "CHN", "JPN", "DEU", "USA", "TWN", "VNM", "MEX"]) if c in t.ci][:8],
+                          key="kww_cmp")
+    kc = [x.rsplit("(", 1)[1][:-1] for x in kcmp]
+    ksel = k[k["국가코드"].isin(kc)].copy()
+    if len(ksel):
+        E = ksel["총수출(백만 달러)"].replace(0, np.nan)
+        for c in I.KWW_COLS:
+            ksel[c + "(%)"] = ksel[c + "(백만 달러)"] / E * 100
+        st.plotly_chart(charts.bar_stacked(ksel.assign(표시=ksel["국가"]), "표시", [c + "(%)" for c in I.KWW_COLS],
+                                           "총수출 분해 (총수출 대비 %)", n=len(ksel), sort_by="부가가치 수출(VAX) 비중(%)"),
+                        width="stretch")
+        st.plotly_chart(charts.bar_stacked(ksel.assign(표시=ksel["국가"]), "표시", ["후방 참여도(%)", "전방 참여도(%)"],
+                                           "GVC 참여도 = 후방 + 전방 (총수출 대비 %)", n=len(ksel), sort_by="GVC 참여도(%)"),
+                        width="stretch")
     src, ind, part = I.gvc_country(t, focus)
     g1, g2 = st.columns(2)
     s2 = src[src["국가코드"] != focus].head(15).copy()
@@ -424,40 +455,36 @@ def gvc_tab(t: I.ICIO, focus: str, years: list[str]):
                     width="stretch")
     st.markdown("##### 상대국별 총교역과 부가가치 교역")
     table(part.head(30))
-    st.markdown("##### 국가 비교")
-    cmp = st.multiselect("비교 국가", [_clab(c) for c in t.countries],
-                         default=[_clab(c) for c in ["KOR", "CHN", "JPN", "DEU", "USA", "TWN", "VNM", "MEX"] if c in t.ci],
-                         key="gvc_cmp")
-    sel = g[g["국가코드"].isin([x.rsplit("(", 1)[1][:-1] for x in cmp])]
-    if len(sel):
-        st.plotly_chart(charts.bar_stacked(sel.assign(표시=sel["국가"]), "표시",
-                                           ["해외 부가가치(FVA) 비중(%)", "전방 참여(DVX) 비중(%)"],
-                                           "GVC 참여도 = 후방(FVA) + 전방(DVX), 총수출 대비 %", n=len(sel), sort_by="GVC 참여도(%)"),
-                        width="stretch")
-    table(g.sort_values("GVC 참여도(%)", ascending=False).reset_index(drop=True))
+    st.markdown("##### 국가별 총수출 분해·GVC 참여도")
+    kt = k.drop(columns=[c for c in k.columns if c.endswith("(백만 달러)") and c != "총수출(백만 달러)"])
+    table(kt.sort_values("GVC 참여도(%)", ascending=False).reset_index(drop=True))
     ts = None
     if st.toggle(f"{COUNTRY_KO[focus]} 연도별 추이 계산 ({years[0]}–{years[-1]}년)", key="gvc_ts"):
         ts = _gvc_series(t.edition, tuple(years), focus)
-        st.plotly_chart(charts.lines(ts, "연도", ["국내 부가가치(DVA) 비중(%)", "해외 부가가치(FVA) 비중(%)", "전방 참여(DVX) 비중(%)"],
-                                     f"{COUNTRY_KO[focus]} GVC 지표 추이 (%)"), width="stretch")
-    tables = {"국가별 GVC 지표": g, f"{COUNTRY_KO[focus]} 부가가치 원천": src, f"{COUNTRY_KO[focus]} 산업별": ind,
+        st.plotly_chart(charts.lines(ts, "연도", KWW_SHARE + ["후방 참여도(%)", "전방 참여도(%)"],
+                                     f"{COUNTRY_KO[focus]} 총수출 분해·GVC 참여도 추이 (총수출 대비 %)"), width="stretch")
+    tables = {"총수출 분해(KWW)": k, "국가별 GVC 지표(간이)": g, f"{COUNTRY_KO[focus]} 부가가치 원천": src, f"{COUNTRY_KO[focus]} 산업별": ind,
               f"{COUNTRY_KO[focus]} 상대국별": part}
     if ts is not None:
         tables[f"{COUNTRY_KO[focus]} 추이"] = ts
     res = Result(
         module=MODULE, analysis="GVC·부가가치무역",
         inputs={"자료": f"OECD ICIO {t.edition}년판 {t.year}년 표", "관심 국가": _clab(focus)},
-        summary={k: fr[k] for k in ["총수출(10억 달러)", "국내 부가가치(DVA) 비중(%)", "해외 부가가치(FVA) 비중(%)",
-                                    "전방 참여(DVX) 비중(%)", "GVC 참여도(%)", "부가가치 수출/총수출(%)"]},
+        summary=card,
         tables=tables,
         notes=COMMON_NOTES[:1] + [
-            "수출의 부가가치 원천: VAX = diag(v)·L·E (E = 국가별 총수출). DVA = 자국 부가가치, FVA = 외국 부가가치(후방 참여).",
-            "DVX(전방 참여) = 자국 부가가치 중 다른 나라 수출에 체화된 부분. GVC 참여도 = (FVA + DVX)/총수출 (Koopman-Wang-Wei 계열의 간이 지표, 일부 중복계산 포함).",
+            "총수출 분해(Koopman·Wang·Wei 2014, 국가 단위): 총수출 = 부가가치 수출(VAX) + 귀환 국내 부가가치(RDV) + 해외 부가가치(FVA) + 순수 이중계산(PDC). "
+            "VAX = 자국 부가가치 중 외국 최종수요에 흡수된 것(최종재 경로 v_s L_ss Y_s수출, 나머지는 중간재 경로). "
+            "RDV = v_s L_ss E_s − VAX (처음 수출될 때 한 번만 센 국내 부가가치 중 되돌아와 국내에서 쓰인 것; Borin·Mancini 2019 원천 기준). "
+            "FVA = Σ v_t B_ts [Y_s수출 + Σ A_sr L_rr Y_rr] (KWW 8·9항). 국내 이중계산 = v_s(B_ss − L_ss)E_s, 해외 이중계산 = 해외 부가가치 함량 − FVA. "
+            "B 는 전체 레온티에프 역행렬, L_rr = (I − A_rr)^-1 은 각국 국내 블록의 역행렬.",
+            "GVC 참여도(Koopman 외 2010): 후방 = 수출 속 해외 부가가치 함량(FVA + 해외 이중계산)/총수출, 전방 = 자국 부가가치 중 다른 나라 총수출에 들어간 것/총수출. "
+            "‘국가별 GVC 지표(간이)’ 시트의 DVA·FVA·DVX 는 이중계산을 나누지 않은 함량 기준.",
             "부가가치 수출 = 자국 부가가치 중 외국 최종수요에 흡수된 부분 (TiVA 의 FD_VA 개념). 상대국별 부가가치 교역수지는 최종수요 기준.",
             "생산물세(TLS)는 부가가치에 포함하지 않으므로 DVA+FVA 는 총수출보다 약간 작음.",
         ],
         sources=[SOURCE_TMPL.format(ed=t.edition)],
-        charts=[ExcelChart("국가별 GVC 지표", "국가", ["해외 부가가치(FVA) 비중(%)", "전방 참여(DVX) 비중(%)"], "GVC 참여 (총수출 대비 %)", "bar", 30)])
+        charts=[ExcelChart("총수출 분해(KWW)", "국가", ["후방 참여도(%)", "전방 참여도(%)"], "GVC 참여도 (총수출 대비 %)", "bar", 30)])
     excel_button(res, "gvc_xlsx")
     notes_box(res)
 

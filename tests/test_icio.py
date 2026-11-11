@@ -75,3 +75,16 @@ def test_excel_large_table(t):
     res = Result(module="국제 산업연관표 분석", analysis="테스트", tables={"국가별": ct, "셀": cells})
     wb = load_workbook(io.BytesIO(to_excel(res)), read_only=True)
     assert wb["셀"].max_row == t.N + 1
+
+
+def test_kww_identity():
+    """KWW 분해: 일곱 구성요소 합 = 총수출, 음수 없음, 비중 합 100."""
+    from engines.io import icio as I
+    av = I.available()
+    ed = list(av)[-1]
+    k = I.kww(ed, av[ed][-1])
+    parts = k[[c + "(백만 달러)" for c in I.KWW_COLS]]
+    assert np.allclose(parts.sum(axis=1), k["총수출(백만 달러)"], rtol=1e-8, atol=1e-3)
+    assert (parts.to_numpy() > -1e-6).all()
+    sh = k[["부가가치 수출(VAX) 비중(%)", "귀환 국내 부가가치(RDV) 비중(%)", "해외 부가가치(FVA) 비중(%)", "순수 이중계산(PDC) 비중(%)"]].sum(axis=1)
+    assert np.allclose(sh[k["총수출(백만 달러)"] > 0], 100)
