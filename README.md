@@ -109,7 +109,7 @@ ECOS 통계검색 → 2.2 산업연관표 → 2.2.1 2020년 실측표 기준 →
 키에 자료 내용·엔진 소스 코드·설정이 모두 들어가므로, 자료나 코드가 바뀌면 자동으로 다시 계산합니다(옛 파일은 안 쓰임). 자료를 갱신하거나 엔진을 고친 뒤에는 다시 채워 커밋합니다.
 
 ```bash
-.venv\Scripts\python.exe build\precompute.py --pages http://localhost:8501 --prune   # 로컬 앱을 띄워 둔 상태에서
+.venv\Scripts\python.exe build\precompute.py --pages http://localhost:8501 --prune   # 로컬 앱을 새로 띄운 직후에
 ```
 사용자가 설정을 바꾼 계산(시나리오 충격, 다른 방법 조합 등)은 처음 한 번 계산한 뒤 같은 방식으로 저장됩니다(클라우드에서는 재시작 전까지).
 

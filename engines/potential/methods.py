@@ -175,25 +175,27 @@ def cf(y: pd.Series, high: int = 32) -> Estimate:
                           f"{high}분기({high / 4:g}년)를 넘는 저주파 변동을 잠재 GDP 로 봄."])
 
 
-def hamilton(y: pd.Series, h: int = 8, p: int = 4) -> Estimate:
+def hamilton(y: pd.Series, h: int = 8, p: int = 4, fit_end: str | None = None) -> Estimate:
     s = y.dropna()
     x = s.to_numpy()
     n = len(x)
+    nf = _n_fit(s.index, fit_end)
     rows = range(p - 1, n - h)
     X = np.array([[1.0] + [x[t - j] for j in range(p)] for t in rows])
     Y = np.array([x[t + h] for t in rows])
-    b = np.linalg.lstsq(X, Y, rcond=None)[0]
+    fit_rows = np.array([t + h < nf for t in rows])          # 회귀는 실적 구간 안의 (t, t+h) 만
+    b = np.linalg.lstsq(X[fit_rows], Y[fit_rows], rcond=None)[0]
     fit = np.full(n, np.nan)
     fit[p - 1 + h:] = X @ b
     tr = pd.Series(fit, index=s.index)
-    return _finish("hamilton", y, tr, params={"예측 시차 h": h, "설명 시차 p": p},
+    return _finish("hamilton", y, tr, params={"예측 시차 h": h, "설명 시차 p": p, "표본": _sample(s.index, nf)},
                    notes=[f"Hamilton(2018): y(t+{h}) 를 상수와 y(t)…y(t-{p - 1}) 에 회귀. 예측치를 추세, 예측오차를 갭으로 봄. "
                           f"추세가 매끄럽지 않아 잠재성장률이 출렁이며, 처음 {h + p - 1}분기는 값이 없음."])
 
 
-def _bn_given_rho(x: np.ndarray, p: int, rho: float):
+def _bn_given_rho(x: np.ndarray, p: int, rho: float, nf: int | None = None):
     n = len(x)
-    T = np.arange(p, n)
+    T = np.arange(p, n if nf is None else nf)               # AR 계수는 실적 구간으로만 추정
     Z = np.column_stack([x[T - j] - x[T - p] for j in range(1, p)]) if p > 1 else np.empty((len(T), 0))
     target = x[T] - rho * x[T - p]
     phi_ = np.linalg.lstsq(Z, target, rcond=None)[0] if p > 1 else np.array([])
@@ -212,13 +214,13 @@ def _bn_given_rho(x: np.ndarray, p: int, rho: float):
     return cyc, phi, ok
 
 
-def bn(y: pd.Series, p: int = 8, window: int = 40, delta: float = 0.2) -> Estimate:
+def bn(y: pd.Series, p: int = 8, window: int = 40, delta: float = 0.2, fit_end: str | None = None) -> Estimate:
     s = y.dropna()
     dy = s.diff()
     mu = dy.rolling(window, min_periods=12).mean().bfill()
     x = (dy - mu).dropna()
     rho = 1 - 1 / np.sqrt(delta)
-    cyc, phi, ok = _bn_given_rho(x.to_numpy(), p, rho)
+    cyc, phi, ok = _bn_given_rho(x.to_numpy(), p, rho, _n_fit(x.index, fit_end))
     gap = pd.Series(cyc, index=x.index).reindex(s.index)
     tr = s - gap
     notes = ["Kamber·Morley·Wong(2018) BN 필터: GDP 성장률(이동평균 제거)에 AR 모형을 맞추되, 추세 충격과 성장률 충격의 "
@@ -232,16 +234,19 @@ def bn(y: pd.Series, p: int = 8, window: int = 40, delta: float = 0.2) -> Estima
                                         "이동평균 기간(분기)": window}, notes=notes)
 
 
-def uc(y: pd.Series) -> Estimate:
+def uc(y: pd.Series, fit_end: str | None = None) -> Estimate:
     import statsmodels.api as sm
     s = y.dropna()
-    mod = sm.tsa.UnobservedComponents(s.to_numpy(), level=True, stochastic_level=False, trend=True,
-                                      stochastic_trend=True, autoregressive=2)
+    nf = _n_fit(s.index, fit_end)
+    spec = dict(level=True, stochastic_level=False, trend=True, stochastic_trend=True, autoregressive=2)
+    mod = sm.tsa.UnobservedComponents(s.to_numpy()[:nf], **spec)
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         res = mod.fit(method="powell", disp=False, maxiter=2000)
         res = mod.fit(start_params=res.params, method="lbfgs", disp=False, maxiter=500)
+        if nf < len(s):        # 실적 구간에서 추정한 모수로 전 구간(전망 포함)을 평활
+            res = sm.tsa.UnobservedComponents(s.to_numpy(), **spec).smooth(res.params)
     level = res.level["smoothed"]
     tr = pd.Series(level, index=s.index)
     pn = dict(zip(mod.param_names, res.params))
@@ -249,7 +254,7 @@ def uc(y: pd.Series) -> Estimate:
     return _finish("uc", y, tr, params={"추세 기울기 충격 표준편차": float(np.sqrt(pn.get("sigma2.trend", np.nan))),
                                         "순환 AR(1)": float(ar1), "순환 AR(2)": float(ar2),
                                         "순환 충격 표준편차": float(np.sqrt(pn.get("sigma2.ar", np.nan))),
-                                        "로그우도": float(res.llf)},
+                                        "로그우도": float(res.llf), "표본": _sample(s.index, nf)},
                    notes=["로그 GDP = 잠재 GDP + 순환. 잠재 GDP 는 기울기(추세 성장률)가 확률보행하는 평활 추세, 순환은 AR(2). "
                           "칼만 평활기로 전 기간 자료를 써서 추정(최우추정)."])
 
@@ -274,7 +279,7 @@ def _inflation(core: pd.Series) -> pd.Series:
 
 
 def mv(y: pd.Series, u: pd.Series, core: pd.Series, lam: float = 1600, lam_u: float = 50000,
-       weight: float = 1.0, max_iter: int = 100) -> Estimate:
+       weight: float = 1.0, max_iter: int = 100, fit_end: str | None = None) -> Estimate:
     """다변량 HP 필터 (Laxton-Tetlow 계열).
 
     최소화: Σ(y-y*)² + λΣ(Δ²y*)² + wπ Σ e_π² + wu Σ e_u² + λu Σ(Δ²u*)²
@@ -294,19 +299,24 @@ def mv(y: pd.Series, u: pd.Series, core: pd.Series, lam: float = 1600, lam_u: fl
     ystar = hp_array(yv, lam)
     ustar = hp_array(uv, lam_u)
     a = kappa = theta = np.nan
+    nf = _n_fit(df.index, fit_end)
     for it in range(max_iter):
         g = yv - ystar
-        # 필립스곡선: (π-πᵉ) = a(π₋₁-πᵉ) + κ g₋₁
-        Xp = np.column_stack([(pilv - piev)[1:], g[:-1]])
-        a, kappa = np.linalg.lstsq(Xp, (piv - piev)[1:], rcond=None)[0]
-        a = float(np.clip(a, 0.0, 0.99))
+        # 필립스곡선: (π-πᵉ) = a(π₋₁-πᵉ) + κ g₋₁  — 계수·가중치는 실적 구간(1..nf-1)으로만 추정
+        Xp = np.column_stack([(pilv - piev)[1:], g[:-1]])[:nf - 1]
+        yp = (piv - piev)[1:][:nf - 1]
+        a, kappa = np.linalg.lstsq(Xp, yp, rcond=None)[0]
+        if a > 0.99 or a < 0.0:            # a 를 경계로 묶으면 κ 는 그 a 에서 다시 추정
+            a = float(np.clip(a, 0.0, 0.99))
+            kappa = float(np.linalg.lstsq(Xp[:, 1:], yp - a * Xp[:, 0], rcond=None)[0][0])
+        a = float(a)
         kappa = float(max(kappa, 0.01))
         e_pi = (piv - piev)[1:] - a * (pilv - piev)[1:] - kappa * g[:-1]
         # 오쿤: (u-u*) = -θ g
-        theta = float(max(-np.linalg.lstsq(g[:, None], uv - ustar, rcond=None)[0][0], 0.01))
+        theta = float(max(-np.linalg.lstsq(g[:nf, None], (uv - ustar)[:nf], rcond=None)[0][0], 0.01))
         e_u = uv - ustar + theta * g
-        w_pi = weight * g.var() / max(e_pi.var(), 1e-8)
-        w_u = weight * g.var() / max(e_u.var(), 1e-8)
+        w_pi = weight * g[:nf].var() / max(e_pi[:nf - 1].var(), 1e-8)
+        w_u = weight * g[:nf].var() / max(e_u[:nf].var(), 1e-8)
         pit = (piv - a * pilv - (1 - a) * piev)[1:]
         Z = np.zeros_like(D)
         A = np.vstack([
@@ -337,17 +347,35 @@ def mv(y: pd.Series, u: pd.Series, core: pd.Series, lam: float = 1600, lam_u: fl
                    extra={"자연실업률": extra})
 
 
+def pe_note(df: pd.DataFrame) -> str:
+    """기대인플레이션으로 실제 쓴 자료 설명."""
+    if "pie" in df.columns and df["pie"].notna().any():
+        return ("기대인플레이션 = 한국은행 소비자동향조사 일반인 향후 1년 기대인플레이션(2002년 이전은 근원물가 직전 4분기 평균 상승률). "
+                "일반인 기대는 실제 물가를 2002~20년 평균 1%p 안팎 웃돌아 실질금리를 낮게 잡는 경향이 있음")
+    return "기대인플레이션 = 근원물가 직전 4분기 평균 상승률(전년동기비 t−1, Holston·Laubach·Williams 2017 방식)"
+
+
 def expected_inflation(df: pd.DataFrame) -> pd.Series:
-    """기대인플레이션: 일반인 향후 1년 기대인플레이션(pie)이 있으면 그것, 없으면 근원물가 상승률의 직전 4분기 평균."""
+    """기대인플레이션: 일반인 향후 1년 기대인플레이션(pie)이 있으면 그것, 없으면 근원물가의 직전 4분기 평균 상승률.
+
+    직전 4분기 평균 = 연율 전기비 상승률의 t−4~t−1 평균 = 전년동기비(t−1) — Holston·Laubach·Williams(2017)처럼 '과거' 물가만 씀
+    (당분기 물가를 넣으면 필립스곡선 좌변 π_t 가 우변에도 들어가 식별이 깨짐).
+    예전에는 전년동기비를 다시 t−1~t−4 로 평균해 약 2분기 더 묵은 값을 썼음.
+    """
     pi = _inflation(df["core"])
-    back = pi.shift(1).rolling(4).mean()
+    back = pi.shift(1)
     if "pie" in df.columns and df["pie"].notna().any():
         return df["pie"].combine_first(back)
     return back
 
 
+LW_NAMES = ["IS: 갭 AR(1) a1", "IS: 갭 AR(2) a2", "IS: 실질금리 갭 계수 a_r", "필립스: 물가 관성 b_π", "필립스: 갭 계수 b_y",
+            "오쿤 계수 θ", "IS 충격 표준편차", "물가 충격 표준편차", "잠재 GDP 충격 표준편차", "오쿤 잔차 표준편차"]
+
+
 def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: float = 0.03, c: float = 1.0,
-       sy_max: float = 0.25, fit_end: str | None = None, su_star: float = USTAR_SD) -> Estimate:
+       sy_max: float = 0.25, fit_end: str | None = None, su_star: float = USTAR_SD,
+       z_sd0: float = 0.25, z_norm: bool = True) -> Estimate:
     """Laubach-Williams(2003)형 준구조모형 (한국은행 권지호 외 2019 준구조모형).
 
       IS곡선     ỹ_t = a1 ỹ_{t-1} + a2 ỹ_{t-2} + (a_r/2) Σ_{j=1,2} (r_{t-j} − r*_{t-j}) + ε1
@@ -370,7 +398,12 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
     nf = _n_fit(d.index, fit_end)
     hp_y = hp_array(d["y"].to_numpy()[:nf], 1600)
     g0 = float(np.mean(np.diff(hp_y[:8])))
-    z0 = float(d["r1"].iloc[:8].mean() - c * 4 * g0)
+    if z_norm:
+        # 정규화: 추정 표본 평균으로 실질금리 = 중립금리(장기 평균적으로 통화정책이 중립) → z 의 수준을 정함.
+        # z 는 충격이 아주 작아 수준이 초기값에만 좌우되고, 그 수준이 GDP 갭 평균을 그대로 결정하기 때문(갭 평균 = −a_r·평균 금리갭/(1−a1−a2)).
+        z0 = float(d["r1"].iloc[:nf].mean() - c * 4 * np.mean(np.diff(hp_y)))
+    else:
+        z0 = float(d["r1"].iloc[:8].mean() - c * 4 * g0)
     us0 = float(hp_array(d["u"].to_numpy()[:nf], 6400)[0])
     m = 10
     y1, y2, r1, r2 = (d[c_].to_numpy() for c_ in ("y1", "y2", "r1", "r2"))
@@ -407,7 +440,7 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                              -th * yv])
         H = np.diag([sIS ** 2, spi ** 2, su ** 2])
         a0 = np.array([hp_y[0], hp_y[0] - g0, hp_y[0] - 2 * g0, g0, g0, g0, z0, z0, z0, us0])
-        P0 = np.diag([0.5, 0.5, 0.5, 0.15, 0.15, 0.15, 1.0, 1.0, 1.0, 0.5]) ** 2
+        P0 = np.diag([0.5, 0.5, 0.5, 0.15, 0.15, 0.15, z_sd0, z_sd0, z_sd0, 0.5]) ** 2
         return SS.SSM(Z, D, H, T, np.zeros(m), Q, a0, P0)
 
     def build_s(x):
@@ -420,6 +453,26 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
               + [(-6, np.log(sy_max))] + [(-6, 2)])
     xh, ll, _ = SS.fit(Y[:nf], build_s, x0, bounds)
     st, _, _ = SS.ksmooth(Y, build(xh))
+    z_shift = 0.0
+    if z_norm:
+        # 평활 결과의 표본 평균 금리갭(r_{t-1} − r*_{t-1})이 0 이 되도록 z 초기값을 옮겨 다시 추정(2~3회면 수렴)
+        gap_of = lambda st_: float(np.mean((r1 - (c * 4 * st_[:, 4] + st_[:, 7]))[:nf]))  # noqa: E731
+        m_ = gap_of(st)
+        best = (abs(m_), xh, ll, st, z0, z_shift)
+        for _ in range(10):
+            if abs(m_) < 0.05:
+                break
+            step = 0.6 * m_
+            z0 += step
+            z_shift += step
+            xh, ll, _ = SS.fit(Y[:nf], build_s, best[1], bounds, rounds=1)
+            st, _, _ = SS.ksmooth(Y, build(xh))
+            m_ = gap_of(st)
+            if abs(m_) < best[0]:
+                best = (abs(m_), xh, ll, st, z0, z_shift)
+            elif abs(m_) > 3 * best[0]:        # 발산 → 가장 좋았던 값으로 되돌리고 멈춤
+                break
+        _, xh, ll, st, z0, z_shift = best
     idx = d.index
     ystar = pd.Series(st[:, 0], index=idx)
     g = pd.Series(st[:, 3], index=idx)
@@ -433,15 +486,21 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                   "IS 충격 표준편차": sd[0], "물가 충격 표준편차": sd[1], "잠재 GDP 충격 표준편차": sd[2],
                   "λ_g(고정)": lam_g, "λ_z(고정)": lam_z, "중립금리의 성장률 계수 c(고정)": c,
                   "잠재 GDP 수준 충격 표준편차 상한": sy_max, "오쿤 잔차 표준편차": sd[3],
+                  "경계에 걸린 모수": ", ".join(LW_NAMES[i] for i in SS.at_bounds(xh, bounds)) or "없음",
+                  "z 수준 정규화": (f"표본 평균 금리갭 {float(np.mean((r1 - (c * 4 * st[:, 4] + st[:, 7]))[:nf])):+.2f}%p "
+                                 f"(z 초기값 {z_shift:+.2f}%p 이동)") if z_norm else "안 함",
                   "자연실업률 충격 표준편차(고정, 분기 %p)": su_star,
                   "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["Laubach·Williams(2003) 준구조모형을 한국은행 권지호 외(2019)처럼 오쿤의 관계식을 더해 수정한 모형. "
                  "IS곡선(실질금리 갭 → GDP 갭), 필립스곡선(GDP 갭 → 근원물가), 오쿤의 관계식(GDP 갭 → 실업률)을 상태공간모형으로 묶어 "
                  "칼만 필터 최우추정 후 평활기로 잠재 GDP·잠재성장률·중립금리·자연실업률을 동시에 추정.",
-                 "실질금리 = 한국은행 기준금리 − 기대인플레이션(한국은행 소비자동향조사 향후 1년, 2002년 이전은 근원물가 상승률 직전 4분기 평균). "
-                 "물가는 농산물·석유류 제외 근원물가 전년동기비. 원논문의 전문가 5년 기대인플레이션 대신 일반인 1년 기대를 씀.",
+                 f"실질금리 = 한국은행 기준금리(분기 평균) − 기대인플레이션. {pe_note(df)}. "
+                 "물가는 농산물·석유류 제외 근원물가 전년동기비.",
                  f"잠재성장률 충격과 중립금리 충격의 상대 크기(λ_g={lam_g:g}, λ_z={lam_z:g})는 고정. 값을 키우면 잠재성장률·중립금리가 더 자주 변함. "
                  f"최우추정이 GDP 변동을 잠재 GDP 수준 충격으로 돌리는 경향이 있어 그 표준편차 상한을 {sy_max:g}%로 둠(상한을 높이면 잠재성장률이 출렁임).",
+                 "중립금리의 기타 요인 z 는 충격이 아주 작아 수준이 초기값에만 좌우되고, 그 수준이 GDP 갭의 평균 수준을 정함"
+                 "(갭 평균 = −a_r × 평균 금리갭 / (1 − a1 − a2)). 그래서 추정 표본 평균으로 실질금리 = 중립금리(장기 평균적으로 통화정책이 중립)가 "
+                 "되도록 z 초기값을 정규화함. 이 정규화를 하지 않으면 2001~19년 GDP 갭이 평균 +2% 안팎으로 계속 플러스가 됨.",
                  f"자연실업률 충격 표준편차는 분기 {su_star:g}%p 로 고정. 한국은 오쿤 계수가 작아(GDP 갭 1% → 실업률 0.1%p 미만) "
                  "최우추정에 맡기면 자연실업률이 실제 실업률을 거의 그대로 따라가고 실업률 갭이 사라짐. 고정값을 키우면 자연실업률이 더 자주 변함."]
     est.extra = {"중립금리·자연실업률": pd.DataFrame({
@@ -451,26 +510,28 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
     return est
 
 
-def svar(y: pd.Series, u: pd.Series, p: int = 4) -> Estimate:
+def svar(y: pd.Series, u: pd.Series, p: int = 4, fit_end: str | None = None) -> Estimate:
     from statsmodels.tsa.api import VAR
     d = pd.DataFrame({"y": y, "u": u}).dropna()
     dy = d["y"].diff()
     d = pd.DataFrame({"dy": dy, "u": d["u"], "y": d["y"]}).dropna()
+    nf = _n_fit(d.index, fit_end)
     t = np.arange(len(d), dtype=float)
     X = np.column_stack([np.ones_like(t), t])
     detr = {}
     for c in ["dy", "u"]:
-        b = np.linalg.lstsq(X, d[c].to_numpy(), rcond=None)[0]
+        b = np.linalg.lstsq(X[:nf], d[c].to_numpy()[:nf], rcond=None)[0]   # 추세는 실적 구간으로
         detr[c] = d[c].to_numpy() - X @ b
     Z = np.column_stack([detr["dy"], detr["u"]])
-    res = VAR(Z).fit(p)
+    res = VAR(Z[:nf]).fit(p)                       # VAR 계수도 실적 구간으로
     A = res.coefs                                   # (p, 2, 2)
     A1 = np.eye(2) - A.sum(axis=0)
     C1 = np.linalg.inv(A1)
     Sig = res.sigma_u
     LR = np.linalg.cholesky(C1 @ Sig @ C1.T)
     B0 = A1 @ LR                                    # 충격 1: 공급(영구), 충격 2: 수요(일시)
-    e = np.linalg.solve(B0, res.resid.T).T          # 구조 충격
+    resid = np.array([Z[t_] - res.intercept - sum(A[i] @ Z[t_ - i - 1] for i in range(p)) for t_ in range(p, len(Z))])
+    e = np.linalg.solve(B0, resid.T).T              # 구조 충격 (전 구간, 실적 구간 계수)
     n = len(e)
     xd = np.zeros((n + p, 2))
     for t_ in range(n):
@@ -478,10 +539,10 @@ def svar(y: pd.Series, u: pd.Series, p: int = 4) -> Estimate:
     dem_dy = xd[p:, 0]
     idx = d.index[p:]
     gap = pd.Series(np.cumsum(dem_dy), index=idx)
-    gap = gap - gap.mean()                          # 초기값 의존 제거: 표본 평균 0
+    gap = gap - gap.iloc[:max(nf - p, 1)].mean()    # 초기값 의존 제거: 실적 구간 평균 0
     tr = (d["y"].reindex(idx) - gap)
     lr_dem = float((C1 @ B0)[0, 1])
-    return _finish("svar", y, tr, params={"VAR 시차": p, "표본": f"{idx[0]}~{idx[-1]}",
+    return _finish("svar", y, tr, params={"VAR 시차": p, "표본": _sample(d.index, nf),
                                           "수요 충격의 GDP 장기 효과(0 이어야 함)": lr_dem},
                    notes=["Blanchard-Quah(1989): GDP 성장률과 실업률(각각 선형 추세 제거)의 VAR(4). 수요 충격은 GDP 수준에 장기 영향이 없다는 "
                           "제약으로 공급·수요 충격을 식별. 수요 충격이 만든 GDP 변동의 누적을 갭으로, 나머지를 잠재 GDP 로 봄.",
@@ -623,6 +684,11 @@ def _ar2_var(f1: float, f2: float) -> float:
     return float((1 - f2) / den) if den > 1e-6 else 1e6
 
 
+PFMV_NAMES = ["갭 AR(1)", "갭 AR(2)", "오쿤: 참가율 β_p", "오쿤: 고용률 β_e", "오쿤: 근로시간 β_h", "필립스: 갭 계수 κ",
+              "필립스: 물가 관성 b_π", "갭 충격 표준편차", "산출 관측 오차", "참가율 오차", "고용률 오차", "근로시간 오차",
+              "물가 충격 표준편차", "참가율 추세 기울기 충격", "근로시간 추세 기울기 충격"]
+
+
 def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str = "2000Q1",
          capital: str = "ksvc", rho_max: float = 0.9, fit_end: str | None = None,
          tfp_cut: str | None = None, su_star: float = USTAR_SD) -> Estimate:
@@ -711,12 +777,13 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                   "갭 충격 표준편차": sd[0], "고용률 추세 충격 표준편차(고정, 분기 %p)": su_star,
                   "참가율 추세 기울기 충격 표준편차": sd[6], "근로시간 추세 기울기 충격 표준편차": sd[7],
                   "TFP 추세 평활 λ": lam, "갭 지속성 상한(AR 계수 합)": rho_max,
+                  "경계에 걸린 모수": ", ".join(PFMV_NAMES[i] for i in SS.at_bounds(xh, bounds)) or "없음",
                   "자본투입": ksrc, "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["한국은행 다변량필터링모형(권지호 외 2019; 미 연준 FRB/US 공급부문의 Fleischman·Roberts 2011 모형 수정형)을 따름. "
                  "생산함수 접근과 같이 잠재 GDP = TFP 추세 + 노동소득분배율×(15세이상인구 + 참가율 추세 + 고용률 추세 + 근로시간 추세) "
                  "+ 자본몫×자본서비스 이나, 투입요소별 추세·순환을 따로 HP 필터하지 않고 하나의 상태공간모형으로 동시에 추정(칼만 필터 최우추정).",
                  "오쿤의 관계식: 경제활동참가율·고용률(1-실업률)·평균 근로시간의 순환 부분이 GDP 갭에 비례. 필립스곡선: 근원물가 상승률이 "
-                 "직전 분기 GDP 갭에 반응(기대인플레이션은 소비자동향조사 향후 1년, 2002년 이전은 근원물가 직전 4분기 평균).",
+                 "직전 분기 GDP 갭에 반응. " + pe_note(df) + ".",
                  f"TFP 추세 기울기 충격 분산은 GDP 갭 분산의 1/λ(λ={lam:g})로 고정해 HP 필터와 같은 평활도를 주고, 참가율·근로시간 추세의 기울기 충격은 "
                  f"최우추정. 고용률 추세(1−자연실업률) 충격은 분기 {su_star:g}%p 로 고정(추정에 맡기면 자연실업률이 실제 실업률을 따라감). 갭이 단위근에 가깝게 추정돼 추세 변화를 흡수하지 않도록 AR 계수 합을 {rho_max:g} 이하로 제한. "
                  "원논문의 공급충격 변수와 노동의 질은 넣지 않음.",

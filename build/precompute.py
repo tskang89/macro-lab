@@ -9,7 +9,9 @@
 실행:
   .venv\\Scripts\\python.exe build\\precompute.py                       # 1·2
   .venv\\Scripts\\python.exe build\\precompute.py --pages http://localhost:8501   # 1·2·3 (앱을 먼저 띄워 둘 것)
-  .venv\\Scripts\\python.exe build\\precompute.py --prune                # 지금 코드·자료로 안 쓰이는 옛 캐시 파일 삭제
+  .venv\\Scripts\\python.exe build\\precompute.py --pages http://localhost:8501 --prune
+      # 위에 더해 이번 실행에서 안 쓰인 옛 캐시 파일 삭제. 앱을 '새로 띄운 직후'에 돌릴 것
+      # (이미 떠 있던 앱은 메모리 캐시로 답해 디스크 파일을 건드리지 않으므로 쓰이는 파일까지 지워짐)
 """
 from __future__ import annotations
 
@@ -76,14 +78,13 @@ def pages(base: str):
         b.close()
 
 
-def prune():
-    """키가 지금 코드로는 만들어지지 않는(옛) 파일을 지우기 위해: 최근 실행에서 쓰인 파일만 남긴다."""
-    cut = time.time() - 6 * 3600
+def prune(since: float):
+    """이번 실행에서 읽히거나 쓰이지 않은(= 지금 코드·자료로는 안 쓰이는) 캐시 파일 삭제."""
     n = 0
     for dirpath, _, files in os.walk(diskcache.CACHE):
         for f in files:
             path = os.path.join(dirpath, f)
-            if os.path.getatime(path) < cut and os.path.getmtime(path) < cut:
+            if os.path.getmtime(path) < since - 1:
                 os.remove(path)
                 n += 1
     print(f"  옛 캐시 {n}개 삭제")
@@ -94,6 +95,7 @@ def main():
     ap.add_argument("--pages", help="실행 중인 앱 주소 (예: http://localhost:8501)")
     ap.add_argument("--prune", action="store_true")
     a = ap.parse_args()
+    t_start = time.time()
     print("1. 산업연관표 유발계수·연관지표")
     io_tables()
     print("2. 국제산업연관표 GVC")
@@ -102,7 +104,10 @@ def main():
         print("3. 잠재성장률·중립금리 기본 설정")
         pages(a.pages.rstrip("/"))
     if a.prune:
-        prune()
+        if not a.pages:
+            print("  --prune 은 --pages 와 함께 써야 합니다(화면 기본 설정 결과까지 확인해야 안 쓰이는 파일을 가릴 수 있음).")
+        else:
+            prune(t_start)
     size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(diskcache.CACHE) for f in fs)
     print(f"캐시 크기 {size / 1e6:.1f} MB  ({diskcache.CACHE})")
 

@@ -84,7 +84,12 @@ def disk_cache(name: str, code: tuple[str, ...], data_files=None):
             if os.path.exists(path):
                 try:
                     with open(path, "rb") as f:
-                        return pickle.load(f)
+                        out = pickle.load(f)
+                    try:
+                        os.utime(path)          # 쓰인 파일 표시 (build/precompute.py --prune 이 안 쓰인 옛 파일을 지움)
+                    except OSError:
+                        pass
+                    return out
                 except Exception:  # noqa: BLE001 — 손상·버전 차이 → 다시 계산
                     pass
             out = fn(*args, **kwargs)

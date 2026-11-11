@@ -77,18 +77,18 @@ def run(df: pd.DataFrame, cfg: dict) -> tuple[dict[str, M.Estimate], dict[str, s
         if k == "cf":
             return M.cf(y, c["cf_high"])
         if k == "hamilton":
-            return M.hamilton(y, c["ham_h"], c["ham_p"])
+            return M.hamilton(y, c["ham_h"], c["ham_p"], fit_end=fit_end)
         if k == "bn":
-            return M.bn(y, c["bn_p"], c["bn_window"], c["bn_delta"])
+            return M.bn(y, c["bn_p"], c["bn_window"], c["bn_delta"], fit_end=fit_end)
         if k == "uc":
-            return M.uc(y)
+            return M.uc(y, fit_end=fit_end)
         if k == "mv":
-            return M.mv(y_full, df["urate"], df["core"], c["lam"], c["mv_lam_u"], c["mv_weight"])
+            return M.mv(y_full, df["urate"], df["core"], c["lam"], c["mv_lam_u"], c["mv_weight"], fit_end=fit_end)
         if k == "lw":
             return M.lw(df, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"], sy_max=c["lw_sy_max"], fit_end=fit_end,
                         su_star=c["ustar_sd"])
         if k == "svar":
-            return M.svar(y_full, df["urate"], c["svar_p"])
+            return M.svar(y_full, df["urate"], c["svar_p"], fit_end=fit_end)
         if k == "pfmv":
             return M.pfmv(df, c["pf_labshare"], c["lam"], capital=c["pf_capital"], rho_max=c["pfmv_rho"], fit_end=fit_end,
                           tfp_cut=c["tfp_cut"], su_star=c["ustar_sd"])

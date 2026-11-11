@@ -154,7 +154,10 @@ def main():
     capa.index = capa.index.astype(int)
     ksvc_a = fetch("291Y522", "A", "1970", "2030", "IND00")
     ksvc_a.index = ksvc_a.index.astype(int)
-    rate = q_index(fetch("722Y001", "Q", "1999Q1", "2030Q4", "0101000"))
+    # 기준금리: ECOS 분기 값은 분기 말 값이므로 월별 값을 받아 분기 평균을 냄
+    rate_m = fetch("722Y001", "M", "199901", "203012", "0101000")
+    rate_m.index = pd.PeriodIndex([f"{t[:4]}-{t[4:]}" for t in rate_m.index], freq="M")
+    rate = rate_m.groupby(rate_m.index.asfreq("Q")).mean()
     pie_m = fetch("511Y003", "M", "200201", "203012", "FMB")
     pie_m.index = pd.PeriodIndex([f"{t[:4]}-{t[4:]}" for t in pie_m.index], freq="M")
     pie = pie_m.groupby(pie_m.index.asfreq("Q")).mean()

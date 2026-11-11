@@ -122,7 +122,7 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str, pd.DataFrame]:
     fc = F.load_bok()
     c1, c2 = st.columns([1, 1])
     pie = c1.radio("기대인플레이션(실질금리 계산)", ["core", "survey"], horizontal=True, key="nr_pie",
-                   format_func=lambda x: "근원물가 직전 4분기 평균" if x == "core" else "소비자 기대인플레이션(1년)",
+                   format_func=lambda x: "근원물가 직전 4분기 평균 상승률" if x == "core" else "소비자 기대인플레이션(1년)",
                    help="실질 정책금리 = 기준금리 − 기대인플레이션. 기본은 Holston·Laubach·Williams(2017)처럼 근원물가 상승률의 직전 4분기 "
                         "평균. 소비자동향조사 일반인 기대는 2010년대 이후 실제 물가를 1%p 안팎 웃돌아 실질금리와 중립금리를 낮게 잡음.")
     fc_on = c2.toggle(f"끝점 보정: 한국은행 전망으로 {_lab(pd.Period(fc['horizon'], freq='Q'))}까지 연장" if fc else "끝점 보정",
@@ -176,7 +176,7 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str, pd.DataFrame]:
 
 def _inputs(cfg: dict, show: str) -> dict:
     return {"추정 방법": ", ".join(N.METHODS[k] for k in cfg["methods"]),
-            "기대인플레이션": "근원물가 직전 4분기 평균" if cfg["pie"] == "core" else "소비자 기대인플레이션(1년)",
+            "기대인플레이션": "근원물가 직전 4분기 평균 상승률(전년동기비 t−1)" if cfg["pie"] == "core" else "소비자 기대인플레이션(1년)",
             "끝점 보정": "한국은행 경제전망" if cfg["fc"] else "없음", "표시 시작": show, "HP λ": cfg["lam"],
             "UC 충격 상한": cfg["uc_smax"], "LW λ_g·λ_z·자연실업률 변동": f"{cfg['lw_lam_g']}·{cfg['lw_lam_z']}·{cfg['ustar_sd']}",
             "기간 프리미엄 가정(%p)": cfg["tp"], "VAR 창·시차·시계": f"{cfg['var_window']}·{cfg['var_p']}·{cfg['var_h']}"}
@@ -217,7 +217,9 @@ def _cards(E: pd.DataFrame, ests: dict):
                    chart_data=spark["실질 정책금리"].round(3).tolist(), chart_type="line")
     cols[4].metric("통화정책 기조 (실질 정책금리 − 중립금리)", f"{stance:+.2f}%p", delta=word, delta_color="off",
                    delta_arrow="off", chart_data=spark["정책 기조(실질 정책금리 − 중립금리)"].round(3).tolist(), chart_type="bar",
-                   help="플러스면 정책금리가 중립보다 높아 긴축적, 마이너스면 완화적. ±0.25%p 안은 중립 부근으로 표시.")
+                   help="플러스면 정책금리가 중립보다 높아 긴축적, 마이너스면 완화적. ±0.25%p 안은 중립 부근으로 표시. "
+                        "기조는 실질 기준 비교라 '기준금리 − 명목 중립금리'와 다를 수 있음: 명목 중립금리는 실질 + 물가목표(2%)이고 "
+                        "실질 정책금리는 기준금리 − 기대인플레이션이므로, 둘의 차이 = 기대인플레이션 − 물가목표.")
 
 
 def compare_tab(E, ests, cfg, show, sources):
@@ -269,7 +271,10 @@ def stance_tab(E, ests, cfg, show, sources):
     st.caption("중립금리 추정의 불확실성(방법 간 범위)이 커서 기조 판단은 부호와 방향 위주로 보는 것이 적절함.")
     t = q[["분기", "라벨", "기준금리", "실질 정책금리", "평균", "최소", "최대", "정책 기조(실질 정책금리 − 중립금리)"]]
     res = Result(module=MODULE, analysis="통화정책 기조", inputs=_inputs(cfg, show), tables={"정책 기조": t.drop(columns=["라벨"])},
-                 notes=["정책 기조 = 실질 정책금리 − 실질 중립금리(방법 평균). 플러스면 긴축적, 마이너스면 완화적."], sources=sources,
+                 notes=["정책 기조 = 실질 정책금리 − 실질 중립금리(방법 평균). 플러스면 긴축적, 마이너스면 완화적.",
+                        "실질 기준 비교이므로 '기준금리 − 명목 중립금리(실질 + 물가목표)'와는 기대인플레이션 − 물가목표 만큼 다름.",
+                        "방법 평균은 그 분기에 값이 있는 방법만 평균함. 시장금리 방법은 2000Q4, VAR 은 2009Q1 부터 들어오므로 "
+                        "그 시점에 평균이 계단처럼 움직일 수 있음."], sources=sources,
                  charts=[ExcelChart("정책 기조", "분기", ["정책 기조(실질 정책금리 − 중립금리)"], "정책 기조 (%p)", kind="col",
                                     top=None, label_skip=_step(len(t)))])
     excel_button(res, "nr_x_stance")

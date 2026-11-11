@@ -62,9 +62,11 @@ def _solve_equal_growth(prev: float, n: int, target_sum: float) -> float:
     return (lo + hi) / 2
 
 
-def _extend_gdp(s: pd.Series, fc: dict, quarters: list[pd.Period], mode: str = "yoy") -> tuple[pd.Series, dict]:
-    """mode='yoy': 분기 경로의 전년동기비를 그대로 맞춤(발표된 반기·연간 성장률을 최대한 재현).
-    mode='qoq': 분기 경로의 전기비를 마지막 실적 수준에 이어 붙임(실적이 전망과 달라진 수준 차이가 이어짐)."""
+def _extend_gdp(s: pd.Series, fc: dict, quarters: list[pd.Period], mode: str = "qoq") -> tuple[pd.Series, dict]:
+    """mode='qoq'(기본): 분기 경로의 전기비를 마지막 실적 수준에 이어 붙임 — 전망 이후 실적이 예상과 달라진 수준 차이가 남지만,
+                        분기 성장 흐름은 전망 그대로라 인위적인 등락이 생기지 않음.
+    mode='yoy': 분기 경로의 전년동기비를 그대로 맞춤 — 실적이 전망보다 높게(낮게) 나오면 그만큼 다음 분기 전기비가 낮아져(높아져)
+                되돌림이 생김(예: 26.3Q 실적 전기비 1.0% > 전망 0.3% → 26.4Q 전기비 −0.2%)."""
     s = s.copy()
     how = {}
     qq = fc.get("q_qoq", {}) if mode == "qoq" else fc.get("q_yoy", {})
@@ -100,8 +102,18 @@ def _extend_gdp(s: pd.Series, fc: dict, quarters: list[pd.Period], mode: str = "
                     s[m] = lev
                     how[m] = f"{name} 전망 {tab[key]:.1f}%(전년동기비)에 맞춘 균등 성장(전기비 {100 * r:.2f}%)"
             else:
-                s[q] = s[q - 4] * (1 + g)
-                how[q] = f"{name} 전망 {tab[key]:.1f}%를 이 분기 전년동기비로 적용"
+                # 일부 분기가 이미 정해졌으면 남은 분기들이 반기(연간) 합계를 정확히 맞추도록 (균등 성장)
+                rest = (1 + g) * sum(s[m] for m in prior) - sum(s[m] for m in known)
+                if free and free[0] == q and rest > 0:
+                    r = _solve_equal_growth(s[q - 1], len(free), rest)
+                    lev = s[q - 1]
+                    for m in free:
+                        lev *= 1 + r
+                        s[m] = lev
+                        how[m] = f"{name} 전망 {tab[key]:.1f}%(전년동기비)에 맞춘 나머지 분기 균등 성장(전기비 {100 * r:.2f}%)"
+                else:
+                    s[q] = s[q - 4] * (1 + g)
+                    how[q] = f"{name} 전망 {tab[key]:.1f}%를 이 분기 전년동기비로 적용"
             break
         if pd.isna(s.get(q, np.nan)):              # 전망이 없으면 직전 4분기 평균 성장
             s[q] = s[q - 1] * np.exp(np.log(s[q - 1] / s[q - 5]) / 4)
@@ -158,7 +170,7 @@ def _trend(s: pd.Series, quarters: list[pd.Period], n: int = 12) -> pd.Series:
     return s
 
 
-def extend(df: pd.DataFrame, fc: dict, mode: str = "yoy") -> tuple[pd.DataFrame, pd.DataFrame]:
+def extend(df: pd.DataFrame, fc: dict, mode: str = "qoq") -> tuple[pd.DataFrame, pd.DataFrame]:
     """df 를 전망 시계 끝까지 연장. 돌려주는 값: (연장된 df, 연장 방법 표)."""
     last = df["gdp"].dropna().index[-1]
     end = pd.Period(fc["horizon"], freq="Q")

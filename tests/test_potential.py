@@ -277,3 +277,42 @@ def test_tfp_cut_extends_trend_linearly(kr):
     assert "2024Q4" in e.params["TFP 추세"]
     base = M.pf(kr, extend=12)
     assert np.allclose(tr.loc[:"2015Q4"], base.extra["생산함수 투입"]["추세 TFP"].loc[:"2015Q4"], atol=0.05)
+
+
+def test_expected_inflation_is_lagged_yoy():
+    """근원물가 기대 = 전년동기비(t−1) (HLW: 직전 4분기 평균 상승률). 당분기 물가가 들어가면 필립스곡선 식별이 깨짐."""
+    df, _ = D.load_korea()
+    d = df.drop(columns=["pie"])
+    pe = M.expected_inflation(d)
+    yoy = (d["core"] / d["core"].shift(4) - 1) * 100
+    assert np.allclose(pe.dropna(), yoy.shift(1).reindex(pe.dropna().index))
+
+
+def test_base_rate_is_quarter_average():
+    """기준금리는 분기 평균(ECOS 분기 값은 분기 말 값): 2026Q3 = (2.75+3+3)/3."""
+    df, _ = D.load_korea()
+    if pd.Period("2026Q3", freq="Q") in df.index:
+        assert abs(df.loc[pd.Period("2026Q3", freq="Q"), "rate"] - (2.75 + 3 + 3) / 3) < 1e-4
+
+
+def test_forecast_extension_no_artificial_dip():
+    """기본(전기비) 연장은 분기 경로의 전기비를 실적 수준에 이어 붙이므로 전망 분기 전기비가 경로와 같고 음수 되돌림이 없음."""
+    df, _ = D.load_korea()
+    fc = F.load_bok()
+    dfx, _ = F.extend(df, fc)
+    g = dfx["gdp"]
+    for q, v in fc["gdp"]["q_qoq"].items():
+        p = pd.Period(q, freq="Q")
+        if p > F.last_actual(dfx):
+            assert abs((g[p] / g[p - 1] - 1) * 100 - v) < 1e-6
+
+
+def test_half_year_fill_matches_target_when_one_quarter_known():
+    """반기 한 분기가 이미 정해졌을 때 나머지 분기로 반기 전년동기비를 정확히 맞춤."""
+    idx = pd.period_range("2024Q1", "2025Q3", freq="Q")
+    s = pd.Series(np.linspace(100, 106, len(idx)), index=idx)
+    fc = {"q_yoy": {}, "q_qoq": {}, "h_yoy": {"2025H2": 3.0}, "a_yoy": {}}
+    out, _ = F._extend_gdp(s, fc, [pd.Period("2025Q4", freq="Q")], mode="yoy")
+    h = out[pd.Period("2025Q3", freq="Q")] + out[pd.Period("2025Q4", freq="Q")]
+    h0 = out[pd.Period("2024Q3", freq="Q")] + out[pd.Period("2024Q4", freq="Q")]
+    assert abs((h / h0 - 1) * 100 - 3.0) < 1e-6

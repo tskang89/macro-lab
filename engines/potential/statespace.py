@@ -72,8 +72,13 @@ def ksmooth(y: np.ndarray, M: SSM):
     return as_, Ps, ll
 
 
-def fit(y: np.ndarray, build, x0: np.ndarray, bounds, burn: int = 4, maxiter: int = 400):
-    """최우추정: build(x) → SSM. 경계 제약 L-BFGS-B, 실패하면 Powell 로 한 번 더."""
+def fit(y: np.ndarray, build, x0: np.ndarray, bounds, burn: int = 4, maxiter: int = 400, rounds: int = 4):
+    """최우추정: build(x) → SSM.
+
+    L-BFGS-B 는 목적함수가 크면 상대 감소 기준으로 일찍 멈추고도 '성공'을 돌려주는 일이 있어(생산함수 다변량 필터에서 2회 반복 후 정지),
+    L-BFGS-B → Powell 을 번갈아 돌려 로그우도가 더 오르지 않을 때까지(0.001 미만) 다듬는다. 반환 결과의 ``rounds`` 에 반복 횟수,
+    ``at_bounds`` 에 경계에 걸린 모수 번호를 담는다.
+    """
     def nll(x):
         try:
             v = -kfilter(y, build(x), burn)[0]
@@ -81,9 +86,28 @@ def fit(y: np.ndarray, build, x0: np.ndarray, bounds, burn: int = 4, maxiter: in
             return 1e12
         return v if np.isfinite(v) else 1e12
 
-    best = minimize(nll, x0, method="L-BFGS-B", bounds=bounds, options={"maxiter": maxiter})
-    if not best.success or best.fun >= 1e11:
-        alt = minimize(nll, best.x, method="Powell", bounds=bounds, options={"maxiter": 4000, "xtol": 1e-4})
+    best = minimize(nll, x0, method="L-BFGS-B", bounds=bounds, options={"maxiter": maxiter, "ftol": 1e-12})
+    r = 0
+    for r in range(1, rounds + 1):
+        prev = best.fun
+        alt = minimize(nll, best.x, method="Powell", bounds=bounds, options={"maxiter": 6000, "xtol": 1e-5, "ftol": 1e-9})
         if alt.fun < best.fun:
             best = alt
+        alt = minimize(nll, best.x, method="L-BFGS-B", bounds=bounds, options={"maxiter": maxiter, "ftol": 1e-12})
+        if alt.fun < best.fun:
+            best = alt
+        if prev - best.fun < 1e-3:
+            break
+    best.rounds = r
+    best.at_bounds = at_bounds(best.x, bounds)
     return best.x, -best.fun, best
+
+
+def at_bounds(x: np.ndarray, bounds, tol: float = 1e-4) -> list[int]:
+    """경계(상·하한)에 걸린 모수 번호."""
+    out = []
+    for i, (v, (lo, hi)) in enumerate(zip(x, bounds)):
+        span = (hi - lo) if (lo is not None and hi is not None) else 1.0
+        if (lo is not None and v - lo <= tol * max(span, 1.0)) or (hi is not None and hi - v <= tol * max(span, 1.0)):
+            out.append(i)
+    return out
