@@ -24,7 +24,7 @@ from functools import cached_property, lru_cache
 import numpy as np
 import pandas as pd
 
-from engines.io.classify import to_group, to_large
+from engines.io.classify import large_to_group, to_group, to_large
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA = os.path.join(ROOT, "data", "processed", "io_kr")
@@ -33,6 +33,7 @@ FD_NAMES = ["민간소비", "정부소비", "민간고정자본형성", "정부�
 VA_NAMES = ["피용자보수", "영업잉여", "고정자본소모", "순생산물세"]
 EXPORT = FD_NAMES.index("수출")
 LEVELS = ["대분류", "중분류"]
+BASIC = "기본부문"          # 실측표 연도에만 있는 380부문 (build/build_io_basic.py)
 
 
 def available_years(level: str = "대분류") -> list[str]:
@@ -67,8 +68,13 @@ class KrIO:
         return [f"{c} {nm}" for c, nm in zip(self.codes, self.names)]
 
     @cached_property
+    def xs(self) -> np.ndarray:
+        """나눗셈용 산출 (산출 0 인 기본부문 → 1)."""
+        return np.where(self.x > 0, self.x, 1.0)
+
+    @cached_property
     def A(self) -> np.ndarray:
-        return self.Z / self.x[None, :]
+        return self.Z / self.xs[None, :]
 
     @cached_property
     def Ad(self) -> np.ndarray:
@@ -81,7 +87,7 @@ class KrIO:
     @cached_property
     def vcomp(self) -> np.ndarray:
         """부가가치 항목별 계수 (4×n)."""
-        return self.V / self.x[None, :]
+        return self.V / self.xs[None, :]
 
     @cached_property
     def v(self) -> np.ndarray:
@@ -117,7 +123,12 @@ class KrIO:
 
     @cached_property
     def dom_share(self) -> np.ndarray:
-        """최종수요 항목별 국산 비율 (n×k)."""
+        """최종수요 항목별 국산 비율 (n×k). 기본부문표는 국산거래표의 실측 비율."""
+        if "Fd" in self.extra:
+            F, Fd = self.F, self.extra["Fd"]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                sh = np.where(np.abs(F) > 1.0, Fd / F, 1.0)
+            return np.clip(sh, 0.0, 1.0)
         sh = np.repeat(self.s[:, None], len(FD_NAMES), axis=1)
         sh[:, EXPORT] = 1.0
         return sh
@@ -125,7 +136,9 @@ class KrIO:
     @cached_property
     def Fd(self) -> np.ndarray:
         """국산 최종수요 (n×k). 국산비율 클리핑으로 생기는 오차는 재고증감에 흡수해
-        행 합계가 (I-Ad)x 와 정확히 일치하도록 한다."""
+        행 합계가 (I-Ad)x 와 정확히 일치하도록 한다. 기본부문표는 국산거래표 값을 그대로 쓴다."""
+        if "Fd" in self.extra:
+            return self.extra["Fd"]
         fd = self.F * self.dom_share
         resid = (np.eye(self.n) - self.Ad) @ self.x - fd.sum(1)
         fd[:, FD_NAMES.index("재고증감")] += resid
@@ -141,18 +154,32 @@ class KrIO:
         return self.e * self.x / 1e3
 
     def sector_frame(self) -> pd.DataFrame:
+        if "large" in self.extra:
+            return pd.DataFrame({"코드": self.codes, "부문": self.names,
+                                 "산업군": [large_to_group(c) for c in self.extra["large"]]})
         return pd.DataFrame({"코드": self.codes, "부문": self.names,
                              "산업군": [to_group(c) for c in self.codes]})
+
+    def class_map(self, by: str) -> tuple[np.ndarray, dict]:
+        """기본부문 → 소·중·대분류 코드와 코드→이름 (기본부문표만)."""
+        k = {"소분류": "small", "중분류": "mid", "대분류": "large"}[by]
+        codes = self.extra[k]
+        return codes, dict(zip(codes, self.extra[k + "_nm"]))
 
 
 @lru_cache(maxsize=32)
 def load_table(level: str, year: str) -> KrIO:
     d = np.load(os.path.join(DATA, f"io_kr_{level}_{year}.npz"), allow_pickle=False)
+    extra = {"Lv_bok": d["Lv_bok"], "Lm_bok": d["Lm_bok"]}
+    if "Fd" in d.files:                      # 기본부문표: 국산 최종수요 실측치와 분류 연계
+        extra["Fd"] = d["Fd"]
+        for k in ("small", "mid", "large"):
+            extra[k] = d[k].astype(str)
+            extra[k + "_nm"] = d[k + "_nm"].astype(str)
     return KrIO(year=str(d["year"]), level=str(d["level"]), basis=str(d["basis"]),
                 codes=d["codes"].astype(str), names=d["names"].astype(str),
                 Z=d["Z"], F=d["F"], imports=d["imports"], x=d["x"], V=d["V"],
-                L=d["L_bok"], Le=d["Le_bok"], Lw=d["Lw_bok"],
-                extra={"Lv_bok": d["Lv_bok"], "Lm_bok": d["Lm_bok"]})
+                L=d["L_bok"], Le=d["Le_bok"], Lw=d["Lw_bok"], extra=extra)
 
 
 # =====================================================================
@@ -213,7 +240,7 @@ def demand_effect(t: KrIO, dF: np.ndarray, dFd: np.ndarray) -> pd.DataFrame:
     out["취업자 변화(명)"] = t.e * dx / 1e3
     out["임금근로자 변화(명)"] = t.w * dx / 1e3
     with np.errstate(divide="ignore", invalid="ignore"):
-        out["생산 변화율(%)"] = np.where(t.x > 0, dx / t.x * 100, 0.0)
+        out["생산 변화율(%)"] = np.where(t.x > 0, dx / t.xs * 100, 0.0)
     return out
 
 
@@ -293,7 +320,7 @@ def supply_effect(t: KrIO, cut_pct: np.ndarray) -> tuple[pd.DataFrame, dict]:
     dx0 = -cut * t.x                                  # 직접 차질
     Zd = t.Ad * t.x[None, :]
     with np.errstate(divide="ignore", invalid="ignore"):
-        B = np.where(t.x[:, None] > 0, Zd / t.x[:, None], 0.0)
+        B = np.where(t.x[:, None] > 0, Zd / t.xs[:, None], 0.0)
     G = np.linalg.inv(np.eye(t.n) - B)
     # 전방: 차질 부문의 본원적 투입이 x 감소분만큼 사라진다고 보고 Ghosh 전파
     # Δv_j 를 정해 Δx_j(자기 부문) = dx0_j 가 되도록 맞춤: Δv' G 의 j 성분 = dx0_j (차질 부문 집합에 대해 풀기)
@@ -304,7 +331,7 @@ def supply_effect(t: KrIO, cut_pct: np.ndarray) -> tuple[pd.DataFrame, dict]:
         dv = np.linalg.solve(Gs.T, dx0[idx])
         fwd = dv @ G[idx, :]
     # 후방: 차질 부문의 중간재 구매 감소 → 상류 생산 감소
-    dz = Zd[:, idx] @ (dx0[idx] / t.x[idx]) if len(idx) else np.zeros(t.n)
+    dz = Zd[:, idx] @ (dx0[idx] / t.xs[idx]) if len(idx) else np.zeros(t.n)
     bwd = t.L @ dz
     bwd[idx] += dx0[idx]
     tab = t.sector_frame()
@@ -314,8 +341,8 @@ def supply_effect(t: KrIO, cut_pct: np.ndarray) -> tuple[pd.DataFrame, dict]:
     tab["전방 부가가치 변화"] = t.v * fwd / 1e3
     tab["후방 부가가치 변화"] = t.v * bwd / 1e3
     with np.errstate(divide="ignore", invalid="ignore"):
-        tab["전방 생산 변화율(%)"] = np.where(t.x > 0, fwd / t.x * 100, 0)
-        tab["후방 생산 변화율(%)"] = np.where(t.x > 0, bwd / t.x * 100, 0)
+        tab["전방 생산 변화율(%)"] = np.where(t.x > 0, fwd / t.xs * 100, 0)
+        tab["후방 생산 변화율(%)"] = np.where(t.x > 0, bwd / t.xs * 100, 0)
     summ = {
         "직접 차질(조원)": dx0.sum() / 1e6,
         "전방 파급 부가가치(조원)": (t.v * fwd).sum() / 1e6,
@@ -365,7 +392,7 @@ def multipliers(t: KrIO, extraction: bool = True) -> pd.DataFrame:
     tab["부가가치(조원)"] = t.V.sum(0) / 1e6
     tab["부가가치율(%)"] = t.v * 100
     tab["중간투입 수입의존도(%)"] = t.m * 100
-    tab["수출 비중(%)"] = np.where(t.x > 0, t.F[:, EXPORT] / t.x * 100, 0)
+    tab["수출 비중(%)"] = np.where(t.x > 0, t.F[:, EXPORT] / t.xs * 100, 0)
     tab["취업자(만 명)"] = t.employment / 1e4
     if extraction:
         tab["가설추출 손실(총산출 대비 %)"] = hypothetical_extraction(t)
@@ -384,10 +411,13 @@ def multipliers_over_time(level: str, code: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def aggregate(tab: pd.DataFrame, by: str, value_cols: list[str]) -> pd.DataFrame:
-    """결과 표를 산업군(또는 대분류)으로 합산."""
+def aggregate(tab: pd.DataFrame, by: str, value_cols: list[str], t: KrIO | None = None) -> pd.DataFrame:
+    """결과 표를 산업군·대분류(기본부문표는 소·중분류도)로 합산. 기본부문표는 t 를 넘겨 분류 연계를 씀."""
     df = tab.copy()
-    if by == "대분류":
+    if t is not None and "mid" in t.extra and by in ("소분류", "중분류", "대분류"):
+        codes, _ = t.class_map(by)
+        df[by] = pd.Series(codes, index=t.codes).reindex(df["코드"]).to_numpy()
+    elif by == "대분류":
         df["대분류"] = [to_large(c) for c in df["코드"]]
     g = df.groupby(by, sort=False)[value_cols].sum().reset_index()
     return g

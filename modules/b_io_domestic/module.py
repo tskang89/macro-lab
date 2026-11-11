@@ -17,7 +17,10 @@ META = {"title": "산업연관표 분석", "group": "산업연관 분석", "orde
 MODULE = "산업연관표 분석"
 SOURCE = ("한국은행, 산업연관표(투입산출표, 생산자가격) — 2015년·2020년 실측표 기준 계열, ECOS "
           "(총거래표·생산유발·수입유발·부가가치유발·취업유발·고용유발계수표)")
-LEVEL_LABEL = {"대분류": "대분류 (33부문)", "중분류": "중분류 (83부문)"}
+LEVEL_LABEL = {"대분류": "대분류 (33부문)", "중분류": "중분류 (83부문)", D.BASIC: "기본부문 (380부문)"}
+BASIC_MODULE = "기본부문 산업연관 분석"
+BASIC_SOURCE = ("한국은행, 2020년 산업연관표(실측표) 투입산출표 생산자가격 기본부문(총거래표·국산거래표), 상품분류표, "
+                "고용표(통합소분류 취업자수) — ECOS 파일 다운로드")
 BENCH = {"2015", "2020"}
 
 COMMON_NOTES = [
@@ -28,6 +31,31 @@ COMMON_NOTES = [
     "산업연관 모형은 고정 투입계수·유휴 생산능력·가격 불변(수량모형)을 가정하는 1차 파급 계산임. "
     "소득→소비의 2차 효과, 가격·금리·환율의 반응, 공급 제약은 들어 있지 않음.",
 ]
+
+
+BASIC_NOTES = [
+    "한국은행 2020년 실측표 기본부문(380부문) 생산자가격 투입산출표. 비경쟁수입형: 국산 투입계수 Ad = 국산거래표 중간거래 / 총산출, "
+    "L = (I − Ad)^-1 (한국은행 공표 기본부문 생산유발계수와 소수점 15자리까지 일치). 380부문 역행렬은 미리 계산해 두고 요청 때는 행렬·벡터 곱만 함.",
+    "최종수요의 국산 비율은 국산거래표의 항목별 실측치(국산 최종수요 / 총 최종수요)를 씀.",
+    "취업·피용자 계수: 고용표는 통합소분류(165)까지만 공표되므로 소분류 계수(취업자 / 소분류 총산출, 명/십억원)를 그 안의 기본부문에 똑같이 적용. "
+    "같은 소분류 안 기본부문 사이의 노동집약도 차이는 반영되지 않음.",
+    "2020년 실측표 한 해 자료이므로 이후 구조 변화(예: 반도체 단가·수출 급변)는 반영되지 않음. 최신 연도 분석은 '산업연관표 분석'(2015–2024년, 대·중분류) 메뉴를 쓰고, "
+    "세부 품목이 필요할 때 이 메뉴를 씀.",
+    "산업연관 모형은 고정 투입계수·유휴 생산능력·가격 불변(수량모형)을 가정하는 1차 파급 계산임. "
+    "소득→소비의 2차 효과, 가격·금리·환율의 반응, 공급 제약은 들어 있지 않음.",
+]
+
+
+def _notes(level: str) -> list[str]:
+    return BASIC_NOTES if level == D.BASIC else COMMON_NOTES
+
+
+def _module(level: str) -> str:
+    return BASIC_MODULE if level == D.BASIC else MODULE
+
+
+def _source(level: str) -> str:
+    return BASIC_SOURCE if level == D.BASIC else SOURCE
 
 
 def _labels(t: D.KrIO) -> tuple[list[str], dict[str, str]]:
@@ -41,11 +69,20 @@ def _code(lab: str, lab2code: dict) -> str:
     return lab2code.get(lab, lab.split(" ", 1)[0])
 
 
-def _aggregate_view(tab: pd.DataFrame, level: str, value_cols: list[str], key: str) -> tuple[pd.DataFrame, str]:
-    opts = ["부문", "산업군"] if level == "대분류" else ["부문", "대분류", "산업군"]
-    by = st.radio("표시 단위", opts, horizontal=True, key=key)
+def _aggregate_view(tab: pd.DataFrame, level: str, value_cols: list[str], key: str,
+                    t: D.KrIO | None = None) -> tuple[pd.DataFrame, str]:
+    if level == D.BASIC:
+        opts = ["부문", "소분류", "중분류", "대분류", "산업군"]
+    else:
+        opts = ["부문", "산업군"] if level == "대분류" else ["부문", "대분류", "산업군"]
+    by = st.radio("표시 단위", opts, horizontal=True, key=key,
+                  format_func=lambda x: "기본부문" if (x == "부문" and level == D.BASIC) else x)
     if by == "부문":
         return tab, "부문"
+    if level == D.BASIC and by != "산업군":
+        g = D.aggregate(tab, by, value_cols, t)
+        g.insert(1, "부문", [t.class_map(by)[1].get(c, c) for c in g[by]])
+        return g, by
     g = D.aggregate(tab, by, value_cols)
     if by == "대분류":
         names = dict(zip(D.load_table("대분류", "2020").codes, D.load_table("대분류", "2020").names))
@@ -58,10 +95,11 @@ def _aggregate_view(tab: pd.DataFrame, level: str, value_cols: list[str], key: s
 # ---------------------------------------------------------------------------
 DEMAND_PRESETS = {
     "수출 전반 10% 감소": [(D.ALL, "수출", "%", -10.0)],
-    "반도체·전자 수출 10% 감소": [({"대분류": "C09", "중분류": "31"}, "수출", "%", -10.0)],
-    "자동차 수출 10% 감소(관세 등)": [({"대분류": "C12", "중분류": "40"}, "수출", "%", -10.0)],
-    "건설투자 5% 감소": [({"대분류": "F", "중분류": "50"}, "민간고정자본형성", "%", -5.0),
-                    ({"대분류": "F", "중분류": "51"}, "정부고정자본형성", "%", -5.0)],
+    "반도체·전자 수출 10% 감소": [({"대분류": "C09", "중분류": "31", D.BASIC: "3102"}, "수출", "%", -10.0)],
+    "자동차 수출 10% 감소(관세 등)": [({"대분류": "C12", "중분류": "40", D.BASIC: ["4011", "4012", "4032"]}, "수출", "%", -10.0)],
+    "건설투자 5% 감소": [({"대분류": "F", "중분류": "50", D.BASIC: ["5010", "5020", "5030"]}, "민간고정자본형성", "%", -5.0),
+                    ({"대분류": "F", "중분류": "51", D.BASIC: ["5111", "5112", "5113", "5121", "5122", "5123", "5124",
+                                                       "5131", "5132", "5133", "5190"]}, "정부고정자본형성", "%", -5.0)],
     "정부소비 10조원 확대": [(D.ALL, "정부소비", "십억원", 10000.0)],
     "민간소비 1% 증가": [(D.ALL, "민간소비", "%", 1.0)],
 }
@@ -73,7 +111,8 @@ def _preset_rows(name: str, level: str, labels: list[str], code2lab: dict) -> li
         if isinstance(sec, dict):
             sec = sec[level]
             # 건설: 대분류는 F 하나, 중분류는 50/51 로 나뉨 → 대분류에서 두 항목 모두 F 로
-        rows.append({"부문": code2lab.get(sec, D.ALL), "최종수요 항목": comp, "단위": unit, "크기": val})
+        for one in (sec if isinstance(sec, list) else [sec]):
+            rows.append({"부문": code2lab.get(one, D.ALL), "최종수요 항목": comp, "단위": unit, "크기": val})
     return rows
 
 
@@ -125,21 +164,33 @@ def demand_tab(t: D.KrIO, level: str):
                                        "생산 변화: 직접·간접 (십억원)", 15, sort_by="생산 변화"),
                     width="stretch")
     value_cols = [c for c in tab.columns if c not in ("코드", "부문", "산업군", "표시명", "생산 변화율(%)")]
-    view, by = _aggregate_view(tab.drop(columns=["표시명"]), level, value_cols, f"{key}_agg")
+    view, by = _aggregate_view(tab.drop(columns=["표시명"]), level, value_cols, f"{key}_agg", t)
     st.caption("금액: 십억원(생산자가격) · 인원: 명 · 들여쓴 항목은 바로 위 항목의 내역")
     table(view)
 
     group = D.aggregate(tab, "산업군", value_cols)
+    extra_tables = {}
+    if level == D.BASIC:
+        mid = D.aggregate(tab, "중분류", value_cols, t)
+        mid.insert(1, "부문", [t.class_map("중분류")[1].get(c, c) for c in mid["중분류"]])
+        st.markdown("##### 중분류(83부문)로 집계")
+        mid["표시명"] = [f"{c} {n}" for c, n in zip(mid["중분류"], mid["부문"])]
+        h1, h2 = st.columns(2)
+        h1.plotly_chart(charts.bar_top(mid, "표시명", "부가가치 변화", 15, "중분류: 부가가치 변화 상위", "십억원"), width="stretch")
+        h2.plotly_chart(charts.bar_top(mid, "표시명", "취업자 변화(명)", 15, "중분류: 취업자 변화 상위", "명"), width="stretch")
+        mid = mid.drop(columns=["표시명"])
+        table(mid)
+        extra_tables["중분류 집계"] = mid
     res = Result(
-        module=MODULE, analysis="수요 파급",
+        module=_module(level), analysis="수요 파급",
         inputs={"자료": f"{t.year}년 산업연관표 ({'실측표' if t.year in BENCH else '연장표'}, {t.basis}년 기준)",
                 "부문 분류": LEVEL_LABEL[level], "금액 단위": "십억원 (요약은 조원)", "인원 단위": "명",
                 "충격 목록": edited.reset_index(drop=True)},
         summary=summ,
-        tables={"부문별 결과": tab.drop(columns=["표시명"]), "산업군별 결과": group},
-        notes=COMMON_NOTES + ["생산 변화 = L × 국산 최종수요 변화. 부가가치 변화 = 부가가치율 × 생산 변화. "
+        tables={"부문별 결과": tab.drop(columns=["표시명"]), **extra_tables, "산업군별 결과": group},
+        notes=_notes(level) + ["생산 변화 = L × 국산 최종수요 변화. 부가가치 변화 = 부가가치율 × 생산 변화. "
                               "수입 변화 = 중간재 수입(Am × 생산 변화) + 최종재 수입. 부가가치 변화율은 해당 연도 총부가가치(기초가격) 대비."],
-        sources=[SOURCE],
+        sources=[_source(level)],
         charts=[ExcelChart("부문별 결과", "부문", ["부가가치 변화"], "부가가치 변화 (십억원)", "bar", 20),
                 ExcelChart("산업군별 결과", "산업군", ["생산 변화", "부가가치 변화"], "산업군별 변화 (십억원)", "col", None)],
     )
@@ -213,15 +264,15 @@ def price_tab(t: D.KrIO, level: str):
               "영업잉여(단위당) 상승률(%)": prof, "순생산물세 상승률(%)": tax, "국내 가격 전가율(%)": passthrough * 100,
               "개별 충격": ed.dropna().reset_index(drop=True)}
     res = Result(
-        module=MODULE, analysis="가격 파급", inputs=inputs, summary=summ,
+        module=_module(level), analysis="가격 파급", inputs=inputs, summary=summ,
         tables={"부문별 가격 변화": show},
-        notes=COMMON_NOTES[:1] + [
+        notes=_notes(level)[:1] + [
             "레온티에프 가격모형: Δp' = (Δπ'·Am + Δw')·L. 수입품 가격(Δπ)과 단위당 부가가치(Δw) 변화가 국산 중간재를 거쳐 전부 전가된다고 가정(전가율로 비례 조정).",
             "소비자물가 = 가계소비 지출 구성(국산+수입, 생산자가격) 가중. 국산품은 Δp, 수입 소비재는 Δπ 가 오른다고 봄. "
             "유통마진·세금·주거비 귀속임대료 등 CPI 바스켓과의 차이 때문에 실제 CPI 영향과 다를 수 있음.",
             "임금 상승은 ‘산출 1단위당’ 피용자보수 증가로 해석(생산성 불변 가정). 수요 감소·대체효과는 반영하지 않음.",
         ],
-        sources=[SOURCE],
+        sources=[_source(level)],
         charts=[ExcelChart("부문별 가격 변화", "부문", ["생산자가격 변화(%)"], "생산자가격 변화 (%)", "bar", 20)])
     excel_button(res, f"{key}_xlsx")
     notes_box(res)
@@ -235,7 +286,7 @@ def supply_tab(t: D.KrIO, level: str):
     code2lab = {v: k for k, v in lab2code.items()}
     key = f"dom_supply_{level}"
     st.markdown("##### 생산 차질")
-    default = {"대분류": "C09", "중분류": "31"}[level]
+    default = {"대분류": "C09", "중분류": "31", D.BASIC: "3102"}[level]
     ed = row_editor(f"{key}_editor", pd.DataFrame([{"부문": code2lab[default], "생산 차질률(%)": 10.0}]), {
         "부문": {"options": labels, "w": 5},
         "생산 차질률(%)": {"num": True, "min": 0.0, "max": 100.0, "fmt": "%.1f", "step": 5.0, "w": 2},
@@ -262,15 +313,15 @@ def supply_tab(t: D.KrIO, level: str):
     st.caption("금액: 십억원(생산자가격)")
     table(show)
     res = Result(
-        module=MODULE, analysis="공급 차질",
+        module=_module(level), analysis="공급 차질",
         inputs={"자료": f"{t.year}년 산업연관표", "부문 분류": LEVEL_LABEL[level], "차질 부문": pd.DataFrame(rows)},
         summary=summ, tables={"부문별 결과": show},
-        notes=COMMON_NOTES[:1] + [
+        notes=_notes(level)[:1] + [
             "전방 파급(Ghosh 공급모형): 차질 부문 산출이 줄면 이를 중간재로 쓰는 하류 부문 산출이 배분계수만큼 감소한다고 가정(대체 불가·재고 없음 → 상한).",
             "후방 파급(레온티에프): 차질 부문이 사들이던 국산 중간재 수요가 줄어 상류 부문 생산이 감소.",
             "두 결과는 서로 다른 극단 가정이므로 더하지 않고 나란히 제시. 실제 영향은 대체·재고·수입 대체 정도에 따라 그 사이에 위치하는 경우가 많음.",
         ],
-        sources=[SOURCE],
+        sources=[_source(level)],
         charts=[ExcelChart("부문별 결과", "부문", ["전방 부가가치 변화", "후방 부가가치 변화"], "부가가치 변화 (십억원)", "bar", 20)])
     excel_button(res, f"{key}_xlsx")
     notes_box(res)
@@ -313,6 +364,21 @@ def structure_tab(t: D.KrIO, level: str):
         st.dataframe(m["유형"].value_counts().rename("부문 수"), width="stretch")
     table(m)
 
+    if len(D.available_years(level)) < 2:
+        res = Result(
+            module=_module(level), analysis="연관 구조",
+            inputs={"자료": f"{t.year}년 산업연관표(실측표)", "부문 분류": LEVEL_LABEL[level]},
+            summary=tot, tables={"유발계수·연관지표": m},
+            notes=_notes(level)[:3] + [
+                "생산유발계수 = L 의 열합. 부가가치·수입유발계수 = 부가가치율·수입계수 × L (둘의 합 = 1). 취업·고용유발계수 = 취업·고용계수 × L.",
+                "영향력계수 = 열합 / 열합 평균(후방 연관), 감응도계수 = 행합 / 행합 평균(전방 연관). 한국은행 공표 방식과 같음.",
+                "가설추출 손실 = 해당 부문의 행·열을 국산 투입계수에서 지웠을 때 '다른 부문' 총산출 감소분(총산출 대비 %). 국산 최종수요는 그대로 둠.",
+            ],
+            sources=[_source(level)],
+            charts=[ExcelChart("유발계수·연관지표", "부문", ["생산유발계수"], "생산유발계수", "bar", 40)])
+        excel_button(res, f"{key}_xlsx")
+        notes_box(res)
+        return
     st.markdown("##### 연도별 추이 (2015~2024년)")
     pick = st.selectbox("부문", labels, index=0, key=f"{key}_pick")
     ts = _over_time(level, _code(pick, lab2code))
@@ -322,15 +388,15 @@ def structure_tab(t: D.KrIO, level: str):
         st.plotly_chart(charts.lines(ts, "연도", cols, pick), width="stretch")
     st.caption("2015–2019년은 2015년 기준, 2020–2024년은 2020년 기준 계열입니다. 실측표는 2015·2020년, 나머지는 연장표입니다.")
     res = Result(
-        module=MODULE, analysis="연관 구조",
+        module=_module(level), analysis="연관 구조",
         inputs={"자료": f"{t.year}년 산업연관표", "부문 분류": LEVEL_LABEL[level], "추이 부문": pick},
         summary=tot, tables={"유발계수·연관지표": m, f"추이_{_code(pick, lab2code)}": ts},
-        notes=COMMON_NOTES[:1] + [
+        notes=_notes(level)[:1] + [
             "생산유발계수 = L 의 열합. 부가가치·수입유발계수 = 부가가치율·수입계수 × L (둘의 합 = 1). 취업·고용유발계수 = 취업·고용계수 × L.",
             "영향력계수 = 열합 / 열합 평균(후방 연관), 감응도계수 = 행합 / 행합 평균(전방 연관). 한국은행 공표 방식과 같음.",
             "가설추출 손실 = 해당 부문의 행·열을 국산 투입계수에서 지웠을 때 ‘다른 부문’ 총산출 감소분(총산출 대비 %). 국산 최종수요는 그대로 둠.",
         ],
-        sources=[SOURCE],
+        sources=[_source(level)],
         charts=[ExcelChart("유발계수·연관지표", "부문", ["생산유발계수"], "생산유발계수", "bar", 33)])
     excel_button(res, f"{key}_xlsx")
     notes_box(res)
@@ -338,6 +404,13 @@ def structure_tab(t: D.KrIO, level: str):
 
 def render():
     page_header("산업연관표 분석", "한국은행 산업연관표로 수요·비용·공급 충격의 산업 간 파급효과를 계산합니다.")
+    from core.registry import PAGES
+    with st.expander("최신 연도는 이 메뉴, 세부 품목은 ‘기본부문 산업연관 분석’", icon=":material/info:"):
+        st.markdown("이 메뉴는 2015–2024년(실측표 2015·2020년, 나머지 연장표)의 대분류(33)·중분류(83) 표를 씁니다. "
+                    "**최신 산업 구조**를 반영한 분석은 여기서 하세요. 반도체(집적회로)·전기승용차·LNG 같은 **세부 품목(기본부문 380)** 분석은 "
+                    "기본부문표가 실측표 연도(2020년)에만 있으므로 별도 메뉴에서 합니다.")
+        if "io-basic" in PAGES:
+            st.page_link(PAGES["io-basic"], label="기본부문 산업연관 분석(2020년, 380부문)으로 가기", icon=":material/arrow_forward:")
     years = D.available_years("대분류")
     c1, c2, c3 = st.columns([1, 1.3, 3])
     year = c1.selectbox("자료 연도", years[::-1], index=0, key="dom_year")

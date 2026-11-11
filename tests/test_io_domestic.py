@@ -1,4 +1,6 @@
 """국내 산업연관 엔진 검증: 한국은행 공표 유발계수 대조 + 모형 항등식."""
+import os
+
 import numpy as np
 import pytest
 
@@ -69,3 +71,21 @@ def test_influence_matches_bok():
     m = D.multipliers(t, extraction=False)
     col = t.L.sum(0)
     assert np.allclose(m["영향력계수"], col / col.mean())
+
+
+def test_basic_sector_table():
+    """기본부문(380) 표: 중분류 표와 총량 일치, 국산 최종수요 행합 = (I−Ad)x, 집계 보존."""
+    if D.BASIC not in [f.split("_")[2] for f in os.listdir(D.DATA) if f.startswith("io_kr_")]:
+        pytest.skip("기본부문 자료 없음")
+    t = D.load_table(D.BASIC, "2020")
+    m = D.load_table("중분류", "2020")
+    assert t.n == 380
+    assert abs(t.x.sum() / m.x.sum() - 1) < 1e-6
+    assert abs(t.total_va / m.total_va - 1) < 1e-6
+    assert abs(t.employment.sum() / m.employment.sum() - 1) < 1e-3
+    assert np.abs((np.eye(t.n) - t.Ad) @ t.x - t.Fd.sum(1)).max() < 1.0
+    dF, dFd = D.build_demand_shock(t, [{"sector": "3102", "component": "수출", "unit": "%", "value": -10.0}])
+    tab = D.demand_effect(t, dF, dFd)
+    g = D.aggregate(tab, "중분류", ["생산 변화", "부가가치 변화"], t)
+    assert len(g) <= 83 and np.isclose(g["생산 변화"].sum(), tab["생산 변화"].sum())
+    assert g.set_index("중분류")["부가가치 변화"].idxmin() == "31"
