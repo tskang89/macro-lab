@@ -332,7 +332,7 @@ def supply_tab(t: D.KrIO, level: str):
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="연관 지표를 계산하는 중…")
 def _multipliers(level: str, year: str) -> pd.DataFrame:
-    return D.multipliers(D.load_table(level, year))
+    return D.multipliers_table(level, year)
 
 
 @st.cache_data

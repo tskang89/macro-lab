@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.linalg import lu_factor, lu_solve
 
+from core.diskcache import disk_cache
 from engines.io.icio_meta import COUNTRY_GROUPS, COUNTRY_KO, INDUSTRY_KO, industry_group
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -559,6 +560,22 @@ def kww(edition: str, year: str) -> pd.DataFrame:
     df["전방 참여도(%)"] = sh(VAX.sum(1) - np.diag(VAX))
     df["GVC 참여도(%)"] = df["후방 참여도(%)"] + df["전방 참여도(%)"]
     return df
+
+
+def _npz(edition: str, year: str) -> list[str]:
+    return [os.path.join(DATA, f"icio_{edition}_{year}.npz")]
+
+
+@disk_cache("icio_gvc", code=("engines/io",), data_files=_npz)
+def gvc_bundle(edition: str, year: str) -> dict:
+    """연도별 GVC 결과 묶음 (시나리오와 무관 → 미리 계산해 저장):
+    국가별 간이 지표, KWW 분해, 모든 나라의 부가가치 원천·산업별·상대국별 표."""
+    t = load(edition, year)
+    out = {"gvc": gvc_indicators(t), "kww": kww(edition, year), "country": {}}
+    for c in t.countries:
+        if c != "ROW":
+            out["country"][c] = gvc_country(t, c)
+    return out
 
 
 def gvc_country(t: ICIO, country: str):

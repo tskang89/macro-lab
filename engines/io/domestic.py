@@ -24,6 +24,7 @@ from functools import cached_property, lru_cache
 import numpy as np
 import pandas as pd
 
+from core.diskcache import disk_cache
 from engines.io.classify import large_to_group, to_group, to_large
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -399,12 +400,22 @@ def multipliers(t: KrIO, extraction: bool = True) -> pd.DataFrame:
     return tab
 
 
+def _npz(level: str, year: str) -> list[str]:
+    return [os.path.join(DATA, f"io_kr_{level}_{year}.npz")]
+
+
+@disk_cache("io_multipliers", code=("engines/io",), data_files=_npz)
+def multipliers_table(level: str, year: str) -> pd.DataFrame:
+    """연도·분류별 유발계수·연관지표 표(가설추출 포함). 시나리오와 무관 → 미리 계산해 저장."""
+    return multipliers(load_table(level, year))
+
+
 def multipliers_over_time(level: str, code: str) -> pd.DataFrame:
     rows = []
     for y in available_years(level):
-        t = load_table(level, y)
-        j = int(np.where(t.codes == code)[0][0])
-        m = multipliers(t, extraction=False).iloc[j]
+        m_all = multipliers_table(level, y)
+        j = int(np.where(m_all["코드"].to_numpy() == code)[0][0])
+        m = m_all.iloc[j]
         rows.append({"연도": y, **{k: m[k] for k in
                      ["생산유발계수", "부가가치유발계수", "수입유발계수", "취업유발계수(명/10억원)",
                       "영향력계수", "감응도계수", "부가가치율(%)", "중간투입 수입의존도(%)", "수출 비중(%)"]}})

@@ -9,6 +9,7 @@ import streamlit as st
 
 from core import charts
 from core.result import ExcelChart, Result
+from core.diskcache import disk_cache
 from core.ui import excel_button, footer, notes_box, page_header, table
 from engines.potential import analysis as A
 from engines.potential import data as D
@@ -79,9 +80,15 @@ HELP = {
 # ---------------------------------------------------------------------------
 # 계산 (캐시)
 # ---------------------------------------------------------------------------
+@disk_cache("potential_run", code=("engines/potential",))
+def _run_disk(df: pd.DataFrame, cfg_json: str):
+    """같은 자료·설정이면 저장해 둔 추정 결과를 꺼내 씀(기본 설정은 build/precompute.py 로 미리 계산)."""
+    return A.run(df, json.loads(cfg_json))
+
+
 @st.cache_data(show_spinner="잠재 GDP 를 추정하고 있습니다(상태공간모형 최우추정 포함, 십여 초)…", max_entries=16)
 def _run(df: pd.DataFrame, cfg_json: str):
-    return A.run(df, json.loads(cfg_json))
+    return _run_disk(df, cfg_json)
 
 
 def _step_q(n: int) -> int:

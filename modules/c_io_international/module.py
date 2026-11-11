@@ -391,24 +391,27 @@ def price_tab(t: I.ICIO, focus: str):
 # ---------------------------------------------------------------------------
 # 5. GVC·부가가치 무역
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner="GVC 지표를 계산하는 중…")
+@st.cache_resource(show_spinner="GVC 지표를 불러오는 중…", max_entries=12)
+def _gvc(ed: str, yr: str) -> dict:
+    return I.gvc_bundle(ed, yr)
+
+
 def _gvc_all(ed: str, yr: str) -> pd.DataFrame:
-    return I.gvc_indicators(_load(ed, yr))
+    return _gvc(ed, yr)["gvc"]
 
 
-@st.cache_data(show_spinner="총수출 부가가치 분해(KWW)를 계산하는 중…(3초 안팎)")
 def _kww(ed: str, yr: str) -> pd.DataFrame:
-    return I.kww(ed, yr)
+    return _gvc(ed, yr)["kww"]
 
 
 KWW_SHARE = ["부가가치 수출(VAX) 비중(%)", "귀환 국내 부가가치(RDV) 비중(%)", "해외 부가가치(FVA) 비중(%)", "순수 이중계산(PDC) 비중(%)"]
 
 
-@st.cache_data(show_spinner="GVC 지표 추이를 계산하는 중…(연도마다 3~4초)")
+@st.cache_data(show_spinner="GVC 지표 추이를 불러오는 중…")
 def _gvc_series(ed: str, years: tuple[str, ...], country: str) -> pd.DataFrame:
     rows = []
     for y in years:
-        g = I.kww(ed, y)
+        g = _gvc(ed, y)["kww"]
         r = g[g["국가코드"] == country].iloc[0].to_dict()
         r["연도"] = y
         rows.append(r)
@@ -442,7 +445,7 @@ def gvc_tab(t: I.ICIO, focus: str, years: list[str]):
         st.plotly_chart(charts.bar_stacked(ksel.assign(표시=ksel["국가"]), "표시", ["후방 참여도(%)", "전방 참여도(%)"],
                                            "GVC 참여도 = 후방 + 전방 (총수출 대비 %)", n=len(ksel), sort_by="GVC 참여도(%)"),
                         width="stretch")
-    src, ind, part = I.gvc_country(t, focus)
+    src, ind, part = _gvc(t.edition, t.year)["country"][focus]
     g1, g2 = st.columns(2)
     s2 = src[src["국가코드"] != focus].head(15).copy()
     s2["표시"] = s2["국가"]

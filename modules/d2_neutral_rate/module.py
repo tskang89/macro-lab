@@ -10,6 +10,7 @@ import streamlit as st
 from core import charts
 from core.result import ExcelChart, Result
 from core.ui import excel_button, footer, notes_box, page_header, table
+from core.diskcache import disk_cache
 from engines import neutral as N
 from engines.potential import analysis as A
 from engines.potential import data as D
@@ -49,21 +50,21 @@ HELP = {
 
 
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner="잠재성장률을 추정하고 있습니다(중립금리의 잠재성장률 연계용)…", max_entries=4)
-def _potential(df: pd.DataFrame) -> pd.Series:
+@disk_cache("neutral_potential", code=("engines/potential",))
+def _potential_disk(df: pd.DataFrame) -> pd.Series:
     ests, _ = A.run(df, {"methods": ["hp", "lw", "pfmv", "pf"], "extend": 0 if (df.get(F.FC_COL, pd.Series([0])) == F.TAIL).any()
                          else 12, "avg_mode": "all", "tfp_cut": "2025Q4"})
     return M.yoy(ests["avg"].trend)
 
 
-@st.cache_data(show_spinner="중립금리를 추정하고 있습니다(칼만 필터 최우추정 포함)…", max_entries=8)
-def _run(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict, dict]:
+@disk_cache("neutral_run", code=("engines/potential", "engines/neutral.py", "modules/d2_neutral_rate/module.py"))
+def _run_disk(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict, dict]:
     c = json.loads(cfg_json)
     base = df if c["pie"] == "survey" else df.drop(columns=["pie"])
     basex = dfx if c["pie"] == "survey" else dfx.drop(columns=["pie"])
     last = str(F.last_actual(dfx))
     out, errs = {}, {}
-    gpot = _potential(dfx) if "growth" in c["methods"] else None
+    gpot = _potential_disk(dfx) if "growth" in c["methods"] else None
     for k in N.METHODS:
         if k not in c["methods"]:
             continue
@@ -88,6 +89,16 @@ def _run(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict, dict
         except Exception as ex:  # noqa: BLE001
             errs[k] = f"{type(ex).__name__}: {ex}"
     return out, errs
+
+
+@st.cache_data(show_spinner="잠재성장률을 추정하고 있습니다(중립금리의 잠재성장률 연계용)…", max_entries=4)
+def _potential(df: pd.DataFrame) -> pd.Series:
+    return _potential_disk(df)
+
+
+@st.cache_data(show_spinner="중립금리를 추정하고 있습니다(칼만 필터 최우추정 포함)…", max_entries=8)
+def _run(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict, dict]:
+    return _run_disk(df, dfx, cfg_json)
 
 
 def _lab(p) -> str:
