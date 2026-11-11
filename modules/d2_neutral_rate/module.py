@@ -16,6 +16,7 @@ from engines.potential import analysis as A
 from engines.potential import data as D
 from engines.potential import forecast as F
 from engines.potential import methods as M
+from engines.potential import sensitivity as S
 
 META = {"title": "중립금리 추정", "group": "성장 분석", "order": 20, "icon": ":material/balance:",
         "status": "ready", "slug": "neutral-rate"}
@@ -72,7 +73,7 @@ def _run_disk(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict,
             if k == "hp":
                 e = N.hp_trend(base, c["lam"])
             elif k == "uc":
-                e = N.uc(base, c["uc_smax"])
+                e = N.uc(base, c["uc_smax"], c.get("uc_rho", 0.9))
             elif k == "lw":
                 e = N.lw(basex, fit_end=last if F.FC_COL in dfx.columns else None, lam_g=c["lw_lam_g"], lam_z=c["lw_lam_z"],
                          su_star=c.get("ustar_sd", M.USTAR_SD))
@@ -81,8 +82,10 @@ def _run_disk(df: pd.DataFrame, dfx: pd.DataFrame, cfg_json: str) -> tuple[dict,
             elif k == "market":
                 e = N.market(base, c["tp"])
             else:
-                e = N.growth_linked(base, gpot)
+                e = N.growth_linked(base, gpot, tuple(c.get("g_base", ("2001Q1", "2019Q4"))))
             e.rstar = e.rstar.loc[:last]
+            if e.sd is not None:
+                e.sd = e.sd.loc[:last]
             for n_, t in list(e.extra.items()):
                 e.extra[n_] = t.loc[:last]
             out[k] = e
@@ -158,6 +161,8 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str, pd.DataFrame]:
                                 key="nr_show")
             cfg["lam"] = st.number_input("HP λ", 400.0, 100000.0, 1600.0, step=400.0, key="nr_lam")
             cfg["uc_smax"] = st.select_slider("UC: 중립금리 분기 충격 표준편차 상한(%p)", [0.1, 0.15, 0.2, 0.3, 0.5], 0.2, key="nr_uc")
+            cfg["uc_rho"] = st.select_slider("UC: 순환 AR 계수 상한", [0.8, 0.85, 0.9, 0.95], 0.9, key="nr_ucrho",
+                                             help="순환이 오래 지속될 수 있게 하면 실질금리의 느린 움직임이 순환으로 잡혀 중립금리가 평평해짐.")
         with b:
             cfg["lw_lam_g"] = st.select_slider("LW: λ_g", [0.02, 0.04, 0.06, 0.08, 0.1], 0.06, key="nr_lwg")
             cfg["lw_lam_z"] = st.select_slider("LW: λ_z (기타 요인 z 변동)", [0.0, 0.01, 0.03, 0.05, 0.1], 0.03, key="nr_lwz")
@@ -171,6 +176,9 @@ def _settings(df: pd.DataFrame) -> tuple[dict, str, pd.DataFrame]:
             cfg["var_window"] = st.slider("VAR: 이동 창(분기)", 32, 64, 40, step=4, key="nr_vw")
             cfg["var_p"] = st.slider("VAR: 시차", 1, 4, 2, key="nr_vp")
             cfg["var_h"] = st.slider("VAR: 예측 시계(분기)", 12, 40, 20, step=4, key="nr_vh")
+            g0 = st.selectbox("잠재성장률 연계: 회귀 시작", ["2001Q1", "2005Q1", "2010Q1"], key="nr_gb",
+                              help="이 분기부터 2019Q4 까지 실질 정책금리를 잠재성장률에 회귀(그 기간 정책이 평균적으로 중립이었다고 가정).")
+            cfg["g_base"] = [g0, "2019Q4"]
     return cfg, show, dfx
 
 
@@ -178,7 +186,8 @@ def _inputs(cfg: dict, show: str) -> dict:
     return {"추정 방법": ", ".join(N.METHODS[k] for k in cfg["methods"]),
             "기대인플레이션": "근원물가 직전 4분기 평균 상승률(전년동기비 t−1)" if cfg["pie"] == "core" else "소비자 기대인플레이션(1년)",
             "끝점 보정": "한국은행 경제전망" if cfg["fc"] else "없음", "표시 시작": show, "HP λ": cfg["lam"],
-            "UC 충격 상한": cfg["uc_smax"], "LW λ_g·λ_z·자연실업률 변동": f"{cfg['lw_lam_g']}·{cfg['lw_lam_z']}·{cfg['ustar_sd']}",
+            "UC 충격 상한·순환 AR 상한": f"{cfg['uc_smax']}·{cfg['uc_rho']}",
+            "잠재성장률 연계 회귀 기간": "~".join(cfg["g_base"]), "LW λ_g·λ_z·자연실업률 변동": f"{cfg['lw_lam_g']}·{cfg['lw_lam_z']}·{cfg['ustar_sd']}",
             "기간 프리미엄 가정(%p)": cfg["tp"], "VAR 창·시차·시계": f"{cfg['var_window']}·{cfg['var_p']}·{cfg['var_h']}"}
 
 
@@ -242,7 +251,14 @@ def compare_tab(E, ests, cfg, show, sources):
                                     f"{basis.split('(')[0]} 중립금리 추정", "%", 460, _step(len(q)), emphasize="평균",
                                     dashed=(pol,), band=band, slots=slots), width="stretch")
     st.caption(("명목 = 실질 + 물가목표(2016년 이후 2%, 이전 3%). 점선: 기준금리. " if basis.startswith("명목") else
-                "점선: 실질 정책금리(기준금리 − 기대인플레이션). ") + "음영: 방법 간 최소~최대.")
+                "점선: 실질 정책금리(기준금리 − 기대인플레이션). ") + "음영: 방법 간 최소~최대(통계적 신뢰구간이 아님).")
+    ut = _unc_table(ests)
+    if ut is not None:
+        st.markdown("**추정 불확실성 (상태공간 모형)**")
+        table(ut)
+        st.caption("표준오차 = 칼만 평활 오차 + 모수 추정 오차(Hamilton 1986: 최우추정량 점근분포에서 모수를 200회 뽑아 평활을 되풀이). "
+                   "기대인플레이션·충격 크기 상한 등 고정한 가정의 불확실성은 들어가지 않으므로 '민감도' 탭과 함께 볼 것. "
+                   "Laubach·Williams(2003)·Holston·Laubach·Williams(2017)도 r* 의 신뢰구간이 매우 넓다고 보고함.")
     ann = T[names + ["평균", pol]].groupby(T.index.year).mean().round(2)
     ann.index.name = "연도"
     ann = ann.reset_index()
@@ -258,6 +274,19 @@ def compare_tab(E, ests, cfg, show, sources):
                                     label_skip=_step(len(q)))])
     excel_button(res, "nr_x_cmp")
     notes_box(res)
+
+
+def _unc_table(ests: dict) -> pd.DataFrame | None:
+    rows = []
+    for k, e in ests.items():
+        if e.sd is None:
+            continue
+        last = e.rstar.dropna().index[-1]
+        v, sd = float(e.rstar.loc[last]), float(e.sd.loc[last])
+        rows.append({"방법": e.name, "분기": _lab(last), "실질 중립금리(%)": round(v, 2), "표준오차(%p)": round(sd, 2),
+                     "90% 구간(%)": f"{v - 1.645 * sd:.2f} ~ {v + 1.645 * sd:.2f}",
+                     "계산": e.params.get("표준오차 계산", "")})
+    return pd.DataFrame(rows) if rows else None
 
 
 def stance_tab(E, ests, cfg, show, sources):
@@ -289,10 +318,20 @@ def detail_tab(E, ests, cfg, show, sources):
     for n_, t in e.extra.items():
         for c in t.columns:
             T[c] = t[c].reindex(T.index)
+    band = None
+    if e.sd is not None:
+        T["90% 하단"] = e.rstar - 1.645 * e.sd
+        T["90% 상단"] = e.rstar + 1.645 * e.sd
+        T["표준오차(%p)"] = e.sd
+        band = ("90% 하단", "90% 상단")
     q = _qframe(T, show)
-    ys = [c for c in q.columns if c not in ("분기", "라벨")]
+    ys = [c for c in q.columns if c not in ("분기", "라벨", "90% 하단", "90% 상단", "표준오차(%p)")]
     st.plotly_chart(charts.ts_lines(q, "라벨", ys, f"{e.name}", "%", 420, _step(len(q)), emphasize="실질 중립금리",
-                                    dashed=("실질 정책금리",)), width="stretch")
+                                    dashed=("실질 정책금리",), band=band, band_name="90% 구간(평활·모수 오차)"), width="stretch")
+    if e.sd is not None:
+        lv, ls = float(e.rstar.dropna().iloc[-1]), float(e.sd.dropna().iloc[-1])
+        st.caption(f"음영: 90% 구간. {_lab(e.rstar.dropna().index[-1])} 실질 중립금리 {lv:.2f}%, 표준오차 {ls:.2f}%p "
+                   f"→ 90% 구간 {lv - 1.645 * ls:.2f} ~ {lv + 1.645 * ls:.2f}%. " + e.notes[-1].split("표준오차:")[-1].split("그래프")[0].strip())
     st.markdown(f"**장점** {HELP[k][1]}  \n**한계** {HELP[k][2]}")
     pt = pd.DataFrame([{"항목": a, "값": f"{float(b):,.4g}" if isinstance(b, (int, float, np.floating)) else str(b)}
                        for a, b in e.params.items()])
@@ -305,6 +344,73 @@ def detail_tab(E, ests, cfg, show, sources):
                                     label_skip=_step(len(q)))])
     excel_button(res, f"nr_x_det_{k}")
     notes_box(res)
+
+
+def _sens_rows(df, dfx_fc, ests, cfg):
+    """(변형, 다시 추정한 방법, 실행 인자) 목록."""
+    variants, base = S.neutral_variants(cfg, dfx_fc is not None)
+    jobs = []
+    for v in variants:
+        redo = [k for k in v.methods if k in cfg["methods"]]
+        if not redo:
+            continue
+        c = {**cfg, **v.over, "methods": redo}
+        dfx_v = df if v.data == "nofc" else dfx_fc if v.data == "fc" else (dfx_fc if cfg["fc"] else df)
+        jobs.append((v, redo, (df, dfx_v, json.dumps(c, sort_keys=True))))
+    return jobs, base
+
+
+def sens_tab(df, dfx_fc, E, ests, cfg, sources):
+    st.markdown("핵심 가정을 하나씩 바꿔 그 가정을 쓰는 방법만 다시 추정하고, 나머지 방법은 그대로 둔 채 마지막 분기의 "
+                "**방법 평균 실질 중립금리**와 **정책 기조**가 얼마나 움직이는지 봅니다. 표준오차(방법 비교 탭)가 담지 못하는 "
+                "'가정의 불확실성'을 보여 줍니다.")
+    jobs, base = _sens_rows(df, dfx_fc, ests, cfg)
+    if not jobs:
+        st.info("바꿔 볼 가정을 쓰는 방법이 선택되지 않았습니다.")
+        return
+    todo = [j for j in jobs if not _run_disk.is_cached(*j[2])]
+    sig = json.dumps(cfg, sort_keys=True, default=str)
+    if todo and st.session_state.get("nr_sens_go") != sig:
+        st.info(f"현재 설정의 민감도 결과가 저장돼 있지 않습니다. 변형 {len(todo)}개를 다시 추정해야 합니다"
+                "(준구조모형이 들어간 변형은 하나에 수십 초). 기본 설정은 미리 계산해 두어 바로 뜹니다.")
+        if st.button("민감도 분석 실행", key="nr_sens_btn", type="primary"):
+            st.session_state["nr_sens_go"] = sig          # 이 설정에 대해서만 실행(설정을 바꾸면 다시 묻기)
+            st.rerun()
+        return
+    last = E["평균"].dropna().index[-1]
+    lab = _lab(last)
+    rbase = N.real_rate(df if cfg["pie"] == "survey" else df.drop(columns=["pie"]))
+    base_sum = S.neutral_summary(ests, rbase, last)
+    rows = []
+    bar = st.progress(0.0, text="민감도 분석 중…") if todo else None
+    for i, (v, redo, args) in enumerate(jobs):
+        try:
+            new, errs = _run_disk(*args)
+            comb = {k: e for k, e in ests.items()}
+            comb.update(new)
+            pie = v.over.get("pie", cfg["pie"])
+            rr = N.real_rate(df if pie == "survey" else df.drop(columns=["pie"]))
+            rows.append((v, redo, S.neutral_summary(comb, rr, last), "; ".join(errs.values()) or None))
+        except Exception as ex:  # noqa: BLE001
+            rows.append((v, redo, None, f"{type(ex).__name__}: {ex}"))
+        if bar:
+            bar.progress((i + 1) / len(jobs), text=f"민감도 분석 중… {i + 1}/{len(jobs)}")
+    if bar:
+        bar.empty()
+    names = {k: N.METHODS[k] for k in N.METHODS}
+    T = S.neutral_table(base_sum, rows, lab, names)
+    T = T[[c for c in T.columns if not c.startswith("다시")] + [c for c in T.columns if c.startswith("다시")]]
+    st.markdown(f"**기준**: 실질 중립금리 평균 {base_sum['avg']:.2f}%, 정책 기조 {base_sum['stance']:+.2f}%p ({lab})  \n"
+                + " · ".join(f"{g}: {b}" for g, b in base.items()))
+    num = [c for c in T.columns if T[c].dtype.kind == "f"]
+    table(T.round({c: 2 for c in num}))
+    sw = T.groupby("가정")["평균 변화(%p)"].agg(lambda x: x.abs().max()).sort_values(ascending=False)
+    st.caption("평균에 가장 크게 영향을 주는 가정: " + ", ".join(f"{g} ±{v:.2f}%p" for g, v in sw.head(3).items())
+               + ". 한 방법만 다시 추정하므로 평균 변화는 그 방법 변화 ÷ 방법 수 입니다.")
+    res = Result(module=MODULE, analysis="민감도 분석", inputs=_inputs(cfg, "—"), tables={"민감도": T},
+                 notes=["가정을 하나씩 바꾸고 그 가정을 쓰는 방법만 다시 추정, 나머지 방법은 기준 결과 유지.",
+                        "기준: " + " · ".join(f"{g}: {b}" for g, b in base.items())], sources=sources)
+    excel_button(res, "nr_x_sens")
 
 
 def data_tab(df, dfx, cfg, show):
@@ -331,6 +437,11 @@ def help_tab():
     st.markdown(f"**한국은행 추정과 비교**  \n한국은행 「한국의 중립금리 추정」의 명목 중립금리 범위는 {BOK_RANGE[0]}~{BOK_RANGE[1]}%"
                 "(중간값 2.55%, 언론 보도 기준)이며, 한국은행은 2026년 9월 현재 기준금리(3.00%)를 그 범위의 상단으로 평가하면서 "
                 "잠재성장률과 함께 중립금리를 다시 추정하고 있다고 밝혔습니다. 이 도구의 DSGE 기반 추정은 아직 없습니다.")
+    st.markdown("**불확실성과 민감도**  \n"
+                "- UC 와 준구조모형(LW형)은 중립금리의 표준오차를 함께 냅니다(칼만 평활 오차 + 모수 추정 오차, Hamilton 1986). "
+                "'방법 비교' 탭의 표와 '방법별 상세' 그래프의 90% 구간으로 보여 줍니다. 한국 자료에서는 IS곡선의 금리 민감도가 작게 "
+                "추정돼 LW형 중립금리의 구간이 특히 넓습니다.  \n"
+                "- 기대인플레이션 선택, 기간 프리미엄, 충격 크기 상한 같은 가정의 영향은 '민감도' 탭에서 하나씩 바꿔 봅니다.")
     st.markdown("**참고 문헌**  \n" + REFS)
 
 
@@ -355,7 +466,7 @@ def render():
         return
     E = _frame(df, ests, cfg)
     _cards(E, ests)
-    tabs = st.tabs(["방법 비교", "통화정책 기조", "방법별 상세", "입력 자료", "방법 설명"])
+    tabs = st.tabs(["방법 비교", "통화정책 기조", "방법별 상세", "민감도", "입력 자료", "방법 설명"])
     with tabs[0]:
         compare_tab(E, ests, cfg, show, SOURCES)
     with tabs[1]:
@@ -363,7 +474,10 @@ def render():
     with tabs[2]:
         detail_tab(E, ests, cfg, show, SOURCES)
     with tabs[3]:
-        data_tab(df, dfx, cfg, show)
+        fc = F.load_bok()
+        sens_tab(df, F.add_tail(F.extend(df, fc)[0], 2.0) if fc else None, E, ests, cfg, SOURCES)
     with tabs[4]:
+        data_tab(df, dfx, cfg, show)
+    with tabs[5]:
         help_tab()
     footer()

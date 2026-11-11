@@ -45,6 +45,7 @@ class RStar:
     params: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     extra: dict[str, pd.DataFrame] = field(default_factory=dict)
+    sd: pd.Series | None = None              # 표준오차(%p): 칼만 평활 + 모수 추정 오차, 상태공간 모형만
 
 
 def inflation_target(idx: pd.PeriodIndex) -> pd.Series:
@@ -102,27 +103,33 @@ def uc(df: pd.DataFrame, s_star_max: float = 0.2, rho_max: float = 0.9) -> RStar
     xh, ll, res = SS.fit(y, build, x0, bounds)
     st, _, _ = SS.ksmooth(y, build(xh))
     rs = pd.Series(st[:, 0], index=r.index)
+    unc = SS.uncertainty(y, y, build, xh, bounds, np.array([[1.0], [0.0]]))
+    sdu = pd.Series((unc["total"] if unc["total"] is not None else unc["filter"])[:, 0], index=r.index)
     sd = np.exp(xh[1:4])
     names = ["순환 AR(1)", "순환 충격 표준편차", "관측 오차 표준편차", "r* 충격 표준편차"]
     return RStar("uc", METHODS["uc"], rs,
                  {"순환 AR(1)": xh[0], "순환 충격 표준편차": sd[0], "관측 오차 표준편차": sd[1], "r* 충격 표준편차": sd[2],
                   "r* 충격 표준편차 상한": s_star_max, "순환 AR 상한": rho_max, "로그우도": ll, "표본": f"{r.index[0]}~{r.index[-1]}",
-                  "경계에 걸린 모수": ", ".join(names[i] for i in res.at_bounds) or "없음"},
+                  "경계에 걸린 모수": ", ".join(names[i] for i in res.at_bounds) or "없음",
+                  "표준오차 계산": (f"평활 + 모수 오차({unc['draws']}회 추출)" if unc["total"] is not None
+                                else f"평활 오차만 — {unc['note']}")},
                  ["실질 정책금리 = 중립금리(확률보행) + 순환(AR(1)) + 관측 오차. 칼만 필터 최우추정 후 평활기로 중립금리를 뽑음. "
                   f"최우추정이 금리 변동을 중립금리 충격으로 돌리지 않도록 분기 충격 표준편차 상한을 {s_star_max:g}%p 로, "
                   f"순환이 추세를 흡수하지 않도록 순환 AR 계수 상한을 {rho_max:g} 로 둠. 모수가 상한·하한에 걸리면(모수 표 참조) "
-                  "결과는 자료보다 그 경계값에 좌우되므로 상한을 바꿔 민감도를 확인할 것."])
+                  "결과는 자료보다 그 경계값에 좌우되므로 상한을 바꿔 민감도를 확인할 것.", SS.unc_note(unc)], sd=sdu)
 
 
 def lw(df: pd.DataFrame, fit_end: str | None = None, **kw) -> RStar:
     e = M.lw(df, fit_end=fit_end, **kw)
     t = e.extra["중립금리·자연실업률"]
+    sd = e.extra["표준오차"]["중립금리 표준오차(%p)"]
     return RStar("lw", METHODS["lw"], t["중립금리 추정(%)"], dict(e.params),
                  ["Laubach·Williams(2003)형 준구조모형(한국은행 권지호 외 2019 의 준구조모형과 같은 구조, 잠재성장률 화면의 모형과 같음). "
                   "IS곡선(실질금리 갭 → GDP 갭)·필립스곡선·오쿤의 관계식을 상태공간모형으로 묶어 r* = 잠재성장률(연율) + 기타 요인 z 를 추정."]
                  + e.notes[1:],
                  {"잠재성장률·z": pd.DataFrame({"잠재성장률(연율, %)": t["잠재성장률(연율, %)"],
-                                               "기타 요인 z(%)": t["중립금리 추정(%)"] - t["잠재성장률(연율, %)"]})})
+                                               "기타 요인 z(%)": t["중립금리 추정(%)"] - t["잠재성장률(연율, %)"]})},
+                 sd=sd)
 
 
 def var_forecast(df: pd.DataFrame, window: int = 40, p: int = 2, horizon: int = 20) -> RStar:

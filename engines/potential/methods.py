@@ -245,18 +245,68 @@ def uc(y: pd.Series, fit_end: str | None = None) -> Estimate:
         warnings.simplefilter("ignore")
         res = mod.fit(method="powell", disp=False, maxiter=2000)
         res = mod.fit(start_params=res.params, method="lbfgs", disp=False, maxiter=500)
+        try:
+            pcov = np.asarray(res.cov_params())
+        except Exception:  # noqa: BLE001
+            pcov = None
+        full = sm.tsa.UnobservedComponents(s.to_numpy(), **spec)
         if nf < len(s):        # 실적 구간에서 추정한 모수로 전 구간(전망 포함)을 평활
-            res = sm.tsa.UnobservedComponents(s.to_numpy(), **spec).smooth(res.params)
+            res = full.smooth(res.params)
+        sd_f, sd_t, nd = _uc_unc(full, np.asarray(res.params), pcov)
     level = res.level["smoothed"]
     tr = pd.Series(level, index=s.index)
     pn = dict(zip(mod.param_names, res.params))
     ar1, ar2 = pn.get("ar.L1", np.nan), pn.get("ar.L2", np.nan)
-    return _finish("uc", y, tr, params={"추세 기울기 충격 표준편차": float(np.sqrt(pn.get("sigma2.trend", np.nan))),
+    unc = pd.DataFrame({"GDP 갭 표준오차(%p)": sd_t if sd_t is not None else sd_f,
+                        "GDP 갭 표준오차: 평활 오차만(%p)": sd_f}, index=s.index)
+    unc_txt = (f"표준오차: 칼만 평활 오차 + 모수 추정 오차(Hamilton 1986 방식, 최우추정량 점근분포에서 {nd}회 추출). "
+               "그래프의 음영은 90% 구간(±1.645 표준오차).") if sd_t is not None else \
+        "표준오차: 모수를 아는 것으로 본 칼만 평활 오차만 반영(모수 공분산을 구하지 못함). 그래프의 음영은 90% 구간."
+    return _finish("uc", y, tr, extra={"표준오차": unc}, params={"추세 기울기 충격 표준편차": float(np.sqrt(pn.get("sigma2.trend", np.nan))),
                                         "순환 AR(1)": float(ar1), "순환 AR(2)": float(ar2),
                                         "순환 충격 표준편차": float(np.sqrt(pn.get("sigma2.ar", np.nan))),
                                         "로그우도": float(res.llf), "표본": _sample(s.index, nf)},
                    notes=["로그 GDP = 잠재 GDP + 순환. 잠재 GDP 는 기울기(추세 성장률)가 확률보행하는 평활 추세, 순환은 AR(2). "
-                          "칼만 평활기로 전 기간 자료를 써서 추정(최우추정)."])
+                          "칼만 평활기로 전 기간 자료를 써서 추정(최우추정).", unc_txt])
+
+
+def _uc_unc(model, p_hat: np.ndarray, pcov, n_draws: int = 200, seed: int = 0):
+    """statsmodels UC 모형의 잠재 GDP(수준) 표준오차: (평활 오차만, 모수 불확실성 포함, 추출 수)."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r0 = model.smooth(p_hat)
+        sd_f = np.sqrt(np.maximum(np.asarray(r0.level["smoothed_cov"]).ravel(), 0))
+        if pcov is None or not np.all(np.isfinite(pcov)):
+            return sd_f, None, 0
+        try:
+            ev, V = np.linalg.eigh((pcov + pcov.T) / 2)
+        except np.linalg.LinAlgError:
+            return sd_f, None, 0
+        if ev.max() <= 0:
+            return sd_f, None, 0
+        Lc = V @ np.diag(np.sqrt(np.maximum(ev, 0)))
+        names = list(model.param_names)
+        i_s = [i for i, n in enumerate(names) if n.startswith("sigma2")]
+        i1, i2 = names.index("ar.L1"), names.index("ar.L2")
+        rng = np.random.default_rng(seed)
+        mus, vs, tries = [], [], 0
+        while len(mus) < n_draws and tries < 4 * n_draws:
+            tries += 1
+            p = p_hat + Lc @ rng.standard_normal(len(p_hat))
+            f1, f2 = p[i1], p[i2]
+            if any(p[i] <= 0 for i in i_s) or not (f1 + f2 < 1 and f2 - f1 < 1 and abs(f2) < 1):
+                continue
+            try:
+                r_ = model.smooth(p)
+            except Exception:  # noqa: BLE001
+                continue
+            mus.append(np.asarray(r_.level["smoothed"]))
+            vs.append(np.asarray(r_.level["smoothed_cov"]).ravel())
+        if len(mus) < 30:
+            return sd_f, None, 0
+        mus, vs = np.array(mus), np.array(vs)
+        return sd_f, np.sqrt(np.maximum(sd_f ** 2 + mus.var(0), 0)), len(mus)
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +523,11 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
             elif abs(m_) > 3 * best[0]:        # 발산 → 가장 좋았던 값으로 되돌리고 멈춤
                 break
         _, xh, ll, st, z0, z_shift = best
+    Wu = np.zeros((m, 2))
+    Wu[0, 0] = 1.0                       # 잠재 GDP 수준 → GDP 갭 표준오차
+    Wu[3, 1], Wu[6, 1] = c * 4, 1.0      # 중립금리 = c·4g + z
+    unc = SS.uncertainty(Y[:nf], Y, build_s, xh, bounds, Wu)
+    sdu = unc["total"] if unc["total"] is not None else unc["filter"]
     idx = d.index
     ystar = pd.Series(st[:, 0], index=idx)
     g = pd.Series(st[:, 3], index=idx)
@@ -490,6 +545,10 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                   "z 수준 정규화": (f"표본 평균 금리갭 {float(np.mean((r1 - (c * 4 * st[:, 4] + st[:, 7]))[:nf])):+.2f}%p "
                                  f"(z 초기값 {z_shift:+.2f}%p 이동)") if z_norm else "안 함",
                   "자연실업률 충격 표준편차(고정, 분기 %p)": su_star,
+                  **({"필립스: 물가 관성 b_π": "식별 안 됨(기대인플레이션 = 직전 분기 물가 상승률이라 b_π 와 무관; 초기값 표시)"}
+                     if np.allclose(pev[:nf], pi1[:nf]) else {}),
+                  "표준오차 계산": (f"평활 + 모수 오차({unc['draws']}회 추출)" if unc["total"] is not None
+                                else f"평활 오차만 — {unc['note']}"),
                   "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["Laubach·Williams(2003) 준구조모형을 한국은행 권지호 외(2019)처럼 오쿤의 관계식을 더해 수정한 모형. "
                  "IS곡선(실질금리 갭 → GDP 갭), 필립스곡선(GDP 갭 → 근원물가), 오쿤의 관계식(GDP 갭 → 실업률)을 상태공간모형으로 묶어 "
@@ -502,8 +561,12 @@ def lw(df: pd.DataFrame, start: str = "2000Q1", lam_g: float = 0.06, lam_z: floa
                  "(갭 평균 = −a_r × 평균 금리갭 / (1 − a1 − a2)). 그래서 추정 표본 평균으로 실질금리 = 중립금리(장기 평균적으로 통화정책이 중립)가 "
                  "되도록 z 초기값을 정규화함. 이 정규화를 하지 않으면 2001~19년 GDP 갭이 평균 +2% 안팎으로 계속 플러스가 됨.",
                  f"자연실업률 충격 표준편차는 분기 {su_star:g}%p 로 고정. 한국은 오쿤 계수가 작아(GDP 갭 1% → 실업률 0.1%p 미만) "
-                 "최우추정에 맡기면 자연실업률이 실제 실업률을 거의 그대로 따라가고 실업률 갭이 사라짐. 고정값을 키우면 자연실업률이 더 자주 변함."]
-    est.extra = {"중립금리·자연실업률": pd.DataFrame({
+                 "최우추정에 맡기면 자연실업률이 실제 실업률을 거의 그대로 따라가고 실업률 갭이 사라짐. 고정값을 키우면 자연실업률이 더 자주 변함.",
+                 SS.unc_note(unc) + " 중립금리 기타 요인 z 의 수준은 정규화(위)로 정한 가정이라 그 불확실성은 들어가지 않음."]
+    est.extra = {"표준오차": pd.DataFrame({
+        "GDP 갭 표준오차(%p)": sdu[:, 0], "GDP 갭 표준오차: 평활 오차만(%p)": unc["filter"][:, 0],
+        "중립금리 표준오차(%p)": sdu[:, 1], "중립금리 표준오차: 평활 오차만(%p)": unc["filter"][:, 1]}, index=idx),
+        "중립금리·자연실업률": pd.DataFrame({
         "실질 기준금리(%)": r.reindex(idx), "중립금리 추정(%)": rstar, "잠재성장률(연율, %)": 4 * g,
         "실업률(%)": u.reindex(idx), "자연실업률 추정(%)": ustar,
         "근원물가 상승률(%)": pi.reindex(idx), "기대인플레이션(%)": pe.reindex(idx)})}
@@ -761,6 +824,10 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
         # 전망 구간의 산출(생산함수 관측식)은 평활에 쓰지 않음 → TFP 추세는 실적 구간의 기울기로 이어지고 전망 성장은 갭으로
         Ys[int((d.index <= pd.Period(tfp_cut, freq="Q")).sum()):, 0] = np.nan
     st, _, _ = SS.ksmooth(Ys, build(xh))
+    Wu = np.zeros((m, 1))
+    Wu[2, 0], Wu[4, 0], Wu[6, 0], Wu[7, 0] = 1.0, s, s, s      # 잠재 GDP 의 상태 부분 = a* + s(p* + e* + h*)
+    unc = SS.uncertainty(Y[:nf], Ys, build_s, xh, bounds, Wu)
+    sdu = unc["total"] if unc["total"] is not None else unc["filter"]
     idx = d.index
     S = lambda j: pd.Series(st[:, j], index=idx)  # noqa: E731
     a_, p_, e_, h_ = S(2), S(4), S(6), S(7)
@@ -778,7 +845,10 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                   "참가율 추세 기울기 충격 표준편차": sd[6], "근로시간 추세 기울기 충격 표준편차": sd[7],
                   "TFP 추세 평활 λ": lam, "갭 지속성 상한(AR 계수 합)": rho_max,
                   "경계에 걸린 모수": ", ".join(PFMV_NAMES[i] for i in SS.at_bounds(xh, bounds)) or "없음",
-                  "자본투입": ksrc, "표본": _sample(idx, nf), "로그우도": ll}
+                  "자본투입": ksrc,
+                  "표준오차 계산": (f"평활 + 모수 오차({unc['draws']}회 추출)" if unc["total"] is not None
+                                else f"평활 오차만 — {unc['note']}"),
+                  "표본": _sample(idx, nf), "로그우도": ll}
     est.notes = ["한국은행 다변량필터링모형(권지호 외 2019; 미 연준 FRB/US 공급부문의 Fleischman·Roberts 2011 모형 수정형)을 따름. "
                  "생산함수 접근과 같이 잠재 GDP = TFP 추세 + 노동소득분배율×(15세이상인구 + 참가율 추세 + 고용률 추세 + 근로시간 추세) "
                  "+ 자본몫×자본서비스 이나, 투입요소별 추세·순환을 따로 HP 필터하지 않고 하나의 상태공간모형으로 동시에 추정(칼만 필터 최우추정).",
@@ -792,8 +862,11 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
         est.params["TFP 추세"] = f"{tfp_cut} 이후 산출 관측은 평활에 쓰지 않음(그 뒤 성장은 순환으로 간주)"
         est.notes.append(f"TFP 추세: {tfp_cut} 이후의 산출(생산함수 관측식)은 평활에 쓰지 않아, TFP 추세는 그때까지의 기울기로 이어지고 "
                          "그 뒤 성장(반도체 호황 등)은 GDP 갭으로 잡힘. 노동 투입 추세는 전망 자료를 그대로 씀.")
+    est.notes.append(SS.unc_note(unc) + " 노동소득분배율·자본투입 등 고정한 가정의 불확실성은 들어가지 않음(민감도 표 참조).")
     ustar = 100 * (1 - np.exp(e_ / 100))
-    est.extra = {"잠재성장률 기여도": comp,
+    est.extra = {"표준오차": pd.DataFrame({"GDP 갭 표준오차(%p)": sdu[:, 0],
+                                        "GDP 갭 표준오차: 평활 오차만(%p)": unc["filter"][:, 0]}, index=idx),
+                 "잠재성장률 기여도": comp,
                  "자연실업률": pd.DataFrame({"실업률(%)": df["urate"].reindex(idx), "자연실업률 추정(%)": ustar,
                                         "근원물가 상승률(%)": pi.reindex(idx)})}
     return est

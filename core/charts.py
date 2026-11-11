@@ -188,7 +188,7 @@ def _ts_layout(fig, labels, title, unit, height, step, shade=None, legend=True):
 def ts_lines(df: pd.DataFrame, x: str, ys: list[str], title: str = "", unit: str = "%", height: int = 420,
              step: int | None = None, emphasize: str | None = None, dashed: tuple[str, ...] = (),
              band: tuple[str, str] | None = None, zero: bool = True, shade: str | None = None,
-             slots: dict[str, int] | None = None):
+             slots: dict[str, int] | None = None, band_name: str = "방법 간 범위"):
     """slots: 계열 이름 → 범주형 색 번호(0~7). 주면 어떤 조합으로 그려도 같은 대상은 같은 색(색은 순위가 아니라 대상을 따름)."""
     t = tk()
     fig = go.Figure()
@@ -197,7 +197,7 @@ def ts_lines(df: pd.DataFrame, x: str, ys: list[str], title: str = "", unit: str
         lo, hi = band
         fig.add_scatter(x=labels, y=df[hi], mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip")
         fig.add_scatter(x=labels, y=df[lo], mode="lines", line=dict(width=0), fill="tonexty",
-                        fillcolor=t["band"], name="방법 간 범위", hoverinfo="skip")
+                        fillcolor=t["band"], name=band_name, hoverinfo="skip")
     others = [c for c in ys if c != emphasize and c not in dashed]
     crowded = len(others) > 8                    # 9색 이상은 만들지 않음 → 개별 선은 회색 맥락선
     slot = 0

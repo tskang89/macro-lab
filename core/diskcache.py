@@ -72,15 +72,18 @@ def disk_cache(name: str, code: tuple[str, ...], data_files=None):
     """
     def deco(fn):
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            if not ENABLED:
-                return fn(*args, **kwargs)
+        def _path(*args, **kwargs):
             parts = [name, code_hash(*code)] + [_arg_token(a) for a in args] + \
                     [f"{k}={_arg_token(v)}" for k, v in sorted(kwargs.items())]
             if data_files is not None:
                 parts += [file_hash(p) for p in data_files(*args, **kwargs)]
             key = hashlib.sha1("|".join(parts).encode()).hexdigest()[:20]
-            path = os.path.join(CACHE, name, key + ".pkl")
+            return os.path.join(CACHE, name, key + ".pkl")
+
+        def wrapper(*args, **kwargs):
+            if not ENABLED:
+                return fn(*args, **kwargs)
+            path = _path(*args, **kwargs)
             if os.path.exists(path):
                 try:
                     with open(path, "rb") as f:
@@ -103,5 +106,6 @@ def disk_cache(name: str, code: tuple[str, ...], data_files=None):
                 pass
             return out
         wrapper.uncached = fn
+        wrapper.is_cached = lambda *a, **k: ENABLED and os.path.exists(_path(*a, **k))
         return wrapper
     return deco

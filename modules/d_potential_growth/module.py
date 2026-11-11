@@ -15,6 +15,7 @@ from engines.potential import analysis as A
 from engines.potential import data as D
 from engines.potential import forecast as F
 from engines.potential import methods as M
+from engines.potential import sensitivity as S
 
 META = {"title": "잠재성장률 추정", "group": "성장 분석", "order": 10, "icon": ":material/trending_up:",
         "status": "ready", "slug": "potential-growth"}
@@ -585,7 +586,19 @@ def detail_tab(df, ests, cfg, show, sources):
     c1.plotly_chart(charts.ts_lines(q, "라벨", ["실제 성장률(전년동기비, %)", "잠재성장률(전년동기비, %)"],
                                     "실제 성장률과 잠재성장률 (전년동기비)", "%", 400, step,
                                     dashed=("실제 성장률(전년동기비, %)",), shade=_sq(df)), width="stretch")
-    c2.plotly_chart(charts.ts_bar_line(q, "라벨", "GDP 갭(%)", [], "GDP 갭", "%", 400, step, shade=_sq(df)), width="stretch")
+    if "표준오차" in e.extra:
+        sd = e.extra["표준오차"]["GDP 갭 표준오차(%p)"].reindex(pd.PeriodIndex(q["분기"], freq="Q")).to_numpy()
+        q["GDP 갭 표준오차(%p)"] = sd
+        qb = q.assign(**{"90% 하단": q["GDP 갭(%)"] - 1.645 * sd, "90% 상단": q["GDP 갭(%)"] + 1.645 * sd})
+        c2.plotly_chart(charts.ts_lines(qb, "라벨", ["GDP 갭(%)"], "GDP 갭과 90% 구간", "%", 400, step, shade=_sq(df),
+                                        band=("90% 하단", "90% 상단"), band_name="90% 구간(평활·모수 오차)"), width="stretch")
+        sl = float(e.extra["표준오차"]["GDP 갭 표준오차(%p)"].get(L["last"], np.nan))
+        c2.caption(f"{lab} GDP 갭 {L['gaps'][k]:+.2f}%, 표준오차 {sl:.2f}%p → 90% 구간 "
+                   f"{L['gaps'][k] - 1.645 * sl:+.2f} ~ {L['gaps'][k] + 1.645 * sl:+.2f}%. 칼만 평활 오차와 모수 추정 오차를 "
+                   "포함하고, 고정한 가정의 불확실성은 '민감도·불확실성' 탭 참조.")
+    else:
+        c2.plotly_chart(charts.ts_bar_line(q, "라벨", "GDP 갭(%)", [], "GDP 갭", "%", 400, step, shade=_sq(df)),
+                        width="stretch")
     ac = a.assign(연도=a["연도"].astype(str))
     st.plotly_chart(charts.ts_lines(ac, "연도", ["실제 성장률(%)", "잠재성장률(%)", "GDP 갭(연평균, %)"],
                                     "연간 실제 성장률·잠재성장률·GDP 갭", "%", 380, _step_a(len(ac)),
@@ -612,6 +625,129 @@ def detail_tab(df, ests, cfg, show, sources):
                                     kind="col", top=None)])
     excel_button(res, f"pg_x_det_{k}")
     notes_box(res)
+
+
+def _unc_table(df, ests) -> pd.DataFrame | None:
+    last = F.last_actual(df)
+    rows = []
+    for k, e in ests.items():
+        if "표준오차" not in e.extra:
+            continue
+        g = float(e.gap.get(last, np.nan))
+        sd = float(e.extra["표준오차"]["GDP 갭 표준오차(%p)"].get(last, np.nan))
+        sf = float(e.extra["표준오차"]["GDP 갭 표준오차: 평활 오차만(%p)"].get(last, np.nan))
+        rows.append({"방법": e.name, f"GDP 갭 {D.label(last)}(%)": round(g, 2), "표준오차(%p)": round(sd, 2),
+                     "그중 평활 오차만(%p)": round(sf, 2), "90% 구간(%)": f"{g - 1.645 * sd:+.2f} ~ {g + 1.645 * sd:+.2f}",
+                     "갭이 플러스일 확률(%)": round(100 * float(_ncdf(g / sd)), 0) if sd > 0 else np.nan})
+    return pd.DataFrame(rows) if rows else None
+
+
+def _ncdf(x: float) -> float:
+    from math import erf, sqrt
+    return 0.5 * (1 + erf(x / sqrt(2)))
+
+
+def _sens_df(v: S.Variant, df_full: pd.DataFrame):
+    """변형에 맞는 입력 자료."""
+    if v.data is None:
+        return df_full
+    if v.data == "pe_core":
+        return df_full.drop(columns=["pie"])
+    return _sens_korea(v.data)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _sens_korea(data: str) -> pd.DataFrame:
+    raw, _ = D.load_korea()
+    if data == "nofc":
+        return raw
+    _, mode, tail = data.split(":")
+    return F.add_tail(F.extend(raw, F.load_bok(), mode)[0], float(tail))
+
+
+def sens_tab(df_full, ests_full, df, ests, cfg, data_key, sources):
+    st.markdown("**추정 불확실성** — 상태공간 모형(UC·준구조·생산함수 다변량 필터)의 GDP 갭 표준오차")
+    ut = _unc_table(df, ests)
+    if ut is not None:
+        table(ut)
+        st.caption("표준오차 = 칼만 평활 오차 + 모수 추정 오차(Hamilton 1986: 최우추정량 점근분포에서 모수를 200회 뽑아 평활을 되풀이, "
+                   "경계·정상성 제약에 걸린 모수는 고정). 고정한 가정(노동소득분배율·충격 크기 상한·전망 연장 등)의 불확실성은 "
+                   "들어가지 않으므로 아래 민감도 표와 함께 볼 것. 방법 평균의 구간은 방법 간 상관을 알 수 없어 계산하지 않음 — "
+                   "'방법 비교' 탭의 방법 간 범위를 참고.")
+    else:
+        st.caption("상태공간 모형(UC·준구조·생산함수 다변량 필터)을 선택하면 GDP 갭의 표준오차를 보여 줍니다.")
+    st.markdown("**민감도 분석** — 핵심 가정을 하나씩 바꿔 그 가정을 쓰는 방법만 다시 추정(나머지는 그대로)한 방법 평균의 변화")
+    fc = None
+    info = st.session_state.get("pg_fc_info")
+    if data_key and data_key.startswith("KR") and info:
+        fc = {"mode": info["mode"], "tail": float(info["tail"])}
+    variants, base = S.potential_variants(cfg, "pie" in df_full.columns, fc)
+    jobs = []
+    for v in variants:
+        replace_all = v.data is not None and v.data != "pe_core"
+        redo = list(cfg["methods"]) if replace_all else [k for k in v.methods if k in cfg["methods"]]
+        if not redo:
+            continue
+        if v.data is not None and not (data_key or "").startswith("KR"):
+            continue
+        c = {**cfg, **v.over, "methods": redo}
+        jobs.append((v, redo, replace_all, c))
+    if not jobs:
+        st.info("바꿔 볼 가정을 쓰는 방법이 선택되지 않았습니다.")
+        return
+    todo = [j for j in jobs if not _run_disk.is_cached(_sens_df(j[0], df_full), json.dumps(j[3], sort_keys=True))]
+    sig = json.dumps(cfg, sort_keys=True, default=str)
+    if todo and st.session_state.get("pg_sens_go") != sig:
+        heavy = sum(1 for j in todo if {"lw", "pfmv"} & set(j[3]["methods"]))
+        st.info(f"현재 설정의 민감도 결과가 저장돼 있지 않습니다. 변형 {len(todo)}개를 다시 추정해야 합니다(준구조·생산함수 다변량 필터가 "
+                f"들어간 변형 {heavy}개는 하나에 30~90초). 기본 설정은 미리 계산해 두어 바로 뜹니다.")
+        if st.button("민감도 분석 실행", key="pg_sens_btn", type="primary"):
+            st.session_state["pg_sens_go"] = sig          # 이 설정에 대해서만 실행(설정을 바꾸면 다시 묻기)
+            st.rerun()
+        return
+    last = F.last_actual(df_full)
+    y0 = int(last.year)
+    base_sum = S.potential_summary(df_full, ests_full, [y0 - 1, y0, y0 + 1])
+    years = [y for y in (y0 - 1, y0, y0 + 1) if np.isfinite(base_sum.get("avg", {}).get(y, np.nan))]
+    rows = []
+    bar = st.progress(0.0, text="민감도 분석 중…") if todo else None
+    for i, (v, redo, replace_all, c) in enumerate(jobs):
+        try:
+            dfv = _sens_df(v, df_full)
+            new, errs = _run_disk(dfv, json.dumps(c, sort_keys=True))
+            comb = S.combine(ests_full, new, redo, replace_all, M.log100(dfv["gdp"]), cfg["avg_mode"])
+            rows.append((v, redo, S.potential_summary(dfv, comb, years), "; ".join(errs.values()) or None))
+        except Exception as ex:  # noqa: BLE001
+            rows.append((v, redo, None, f"{type(ex).__name__}: {ex}"))
+        if bar:
+            bar.progress((i + 1) / len(jobs), text=f"민감도 분석 중… {i + 1}/{len(jobs)}")
+    if bar:
+        bar.empty()
+    names = {k: e.name for k, e in ests_full.items()}
+    names.update({k: M.METHODS[k] for k in M.METHODS if k not in names})
+    lab = D.label(last)
+    head, det = S.potential_table(base_sum, rows, years, lab, names)
+    head = head[[c for c in head.columns if c != "다시 추정한 방법"] + ["다시 추정한 방법"]]
+    b = base_sum.get("avg", {})
+    st.markdown(f"**기준(방법 평균)**: GDP 갭 {lab} {b.get('gap', np.nan):+.2f}%, "
+                + ", ".join(f"{y}년 잠재성장률 {b[y]:.2f}%" for y in years) + "  \n"
+                + " · ".join(f"{g}: {bv}" for g, bv in base.items()))
+    num = [c_ for c_ in head.columns if head[c_].dtype.kind == "f"]
+    table(head.round({c_: 2 for c_ in num}))
+    if len(head):
+        sw = head.groupby("가정")["갭 변화(%p)"].agg(lambda x: x.abs().max()).sort_values(ascending=False)
+        st.caption("GDP 갭에 가장 크게 영향을 주는 가정: " + ", ".join(f"{g} ±{v_:.2f}%p" for g, v_ in sw.head(3).items())
+                   + ". 한 방법만 다시 추정한 변형의 평균 변화는 그 방법 변화를 방법 수로 나눈 만큼입니다(방법별 변화는 아래).")
+    if len(det):
+        with st.expander("방법별 변화"):
+            numd = [c_ for c_ in det.columns if det[c_].dtype.kind == "f"]
+            table(det.round({c_: 2 for c_ in numd}))
+    res = Result(module=MODULE, analysis="민감도·불확실성", inputs=_inputs(cfg, "—"),
+                 tables={"불확실성": ut if ut is not None else pd.DataFrame(), "민감도(평균)": head, "민감도(방법별)": det},
+                 notes=["표준오차: 칼만 평활 오차 + 모수 추정 오차(Hamilton 1986).",
+                        "민감도: 가정을 하나씩 바꾸고 그 가정을 쓰는 방법만 다시 추정, 나머지 방법은 기준 결과 유지.",
+                        "기준: " + " · ".join(f"{g}: {bv}" for g, bv in base.items())] + _fc_notes(), sources=sources)
+    excel_button(res, "pg_x_sens")
 
 
 def _qframe(t: pd.DataFrame, show: str) -> pd.DataFrame:
@@ -835,6 +971,12 @@ def help_tab():
                 "- 근로시간은 OECD·PWT·사업체노동력조사로 구성(한국은행 2024년은 경제활동인구조사 미시자료로 집단별 구성).  \n"
                 "- 준구조모형의 기대인플레이션은 일반인 1년 기대(원논문은 전문가 5년 기대), 팬데믹 기간 이분산 처리는 하지 않음.  \n"
                 "- 집단별(성·연령·학력 20개 집단) 고용률·근로시간 추세 대신 집계 자료의 추세를 씀.")
+    st.markdown("**불확실성과 민감도**  \n"
+                "- 상태공간 모형(UC·준구조·생산함수 다변량 필터)은 GDP 갭의 표준오차를 함께 냅니다: 칼만 평활 오차(모수를 안다고 볼 때)에 "
+                "모수 추정 오차를 더한 값(Hamilton 1986). '방법별 상세'의 갭 그래프에 90% 구간으로 그립니다.  \n"
+                "- 표준오차는 고정한 가정(노동소득분배율, 충격 크기 상한, 자연실업률 변동 크기, 전망 연장 방식 등)의 불확실성을 담지 못하므로 "
+                "'민감도·불확실성' 탭에서 가정을 하나씩 바꿔 다시 추정한 결과를 함께 봅니다.  \n"
+                "- '방법 비교'의 음영(방법 간 최소~최대)은 모형 선택의 불확실성이며 통계적 신뢰구간이 아닙니다.")
     st.markdown("**참고 문헌**  \n" + REFS)
 
 
@@ -853,6 +995,7 @@ def render():
         st.warning("추정 방법을 하나 이상 고르세요.")
         return
     ests, errs = _run(df, json.dumps(cfg, sort_keys=True))
+    df_full, ests_full = df, ests
     df, ests = _trim(df, ests)
     for k, msg in errs.items():
         st.warning(f"{M.METHODS.get(k, k)}: {msg}")
@@ -860,7 +1003,8 @@ def render():
         st.error("추정 결과가 없습니다.")
         return
     _cards(df, ests)
-    tabs = st.tabs(["방법 비교", "방법별 상세", "생산함수 기여도", "자연실업률·중립금리", "입력 자료", "방법 설명"])
+    tabs = st.tabs(["방법 비교", "방법별 상세", "생산함수 기여도", "자연실업률·중립금리", "민감도·불확실성", "입력 자료",
+                    "방법 설명"])
     with tabs[0]:
         compare_tab(df, ests, cfg, show, sources)
     with tabs[1]:
@@ -870,7 +1014,9 @@ def render():
     with tabs[3]:
         nairu_tab(df, ests, cfg, show, sources)
     with tabs[4]:
-        data_tab(df, show, sources)
+        sens_tab(df_full, ests_full, df, ests, cfg, data_key, sources)
     with tabs[5]:
+        data_tab(df, show, sources)
+    with tabs[6]:
         help_tab()
     footer()

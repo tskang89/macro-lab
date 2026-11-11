@@ -2,7 +2,8 @@
 
   1. 산업연관표: 연도·분류(대·중·기본부문)별 유발계수·연관지표(가설추출 포함)
   2. 국제산업연관표: 연도별 GVC 묶음(간이 지표, KWW 분해, 77개국 부가가치 원천·산업별·상대국별 표)
-  3. 잠재성장률·중립금리: 화면 기본 설정의 추정 결과 — 실행 중인 로컬 앱(--pages URL)을 기본 설정으로 열어
+  3. 잠재성장률·중립금리: 화면 기본 설정의 추정 결과와 민감도 분석(가정을 하나씩 바꾼 재추정, 20분 안팎)
+     — 실행 중인 로컬 앱(--pages URL)을 기본 설정으로 열어
      화면이 실제로 쓰는 것과 똑같은 키로 저장되게 한다(설정을 이 스크립트에서 다시 만들면 어긋날 수 있음).
 
 자료(ECOS·OECD 원자료, 한국은행 전망)나 엔진 코드가 바뀌면 키가 바뀌므로 이 스크립트를 다시 돌리고 data/cache 를 커밋한다.
@@ -65,9 +66,18 @@ def pages(base: str):
                         return time.time() - t0
             return None
 
-        # 잠재성장률: 기본(한국은행 4개 모형) → 전체 방법 묶음
+        def sens(tab):
+            pg.get_by_role("tab", name=tab, exact=True).click()
+            wait_done()
+            btn = pg.get_by_role("button", name="민감도 분석 실행")
+            if btn.count():
+                btn.first.click()
+                print(f"    민감도 분석: {wait_done(3600):.0f}초")
+
+        # 잠재성장률: 기본(한국은행 4개 모형) + 민감도 → 전체 방법 묶음
         pg.goto(f"{base}/potential-growth", timeout=600000)
         print(f"  잠재성장률 기본 설정: {wait_done():.0f}초")
+        sens("민감도·불확실성")
         radio = pg.get_by_text("전체 12가지 방법", exact=False)
         if radio.count():
             radio.first.click()
@@ -75,6 +85,7 @@ def pages(base: str):
         # 중립금리: 기본 설정(기대인플레이션 = 근원물가)
         pg.goto(f"{base}/neutral-rate", timeout=600000)
         print(f"  중립금리 기본 설정: {wait_done():.0f}초")
+        sens("민감도")
         b.close()
 
 

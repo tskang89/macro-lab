@@ -19,6 +19,7 @@ def test_disk_cache_roundtrip_and_keys(tmp_path, monkeypatch):
     assert f(pd.DataFrame({"a": [1.0, 3.0]}), 2) == 8   # 내용이 다르면 새로 계산
     assert len(calls) == 2
     assert len(list((tmp_path / "t").glob("*.pkl"))) == 2
+    assert f.is_cached(df, 2) and not f.is_cached(df, 3)
 
 
 def test_disk_cache_survives_corrupt_file(tmp_path, monkeypatch):
