@@ -32,8 +32,12 @@ cd D:\Claude\Projects\macro-lab
 ## 폴더 구조
 
 ```
-app.py                     진입점 — modules/ 를 읽어 왼쪽 메뉴 자동 구성
+app.py                     진입점 — modules/ 를 읽어 왼쪽 메뉴 자동 구성(전체 플랫폼)
+app_potential.py           잠재성장률 전용 앱(메뉴 숨김)
+app_neutral.py             중립금리 전용 앱(메뉴 숨김)
+app_io.py                  산업연관표 전용 앱(국내·기본부문·국제 3메뉴)
 core/                      공통 플랫폼 (모든 모듈이 같이 씀)
+  shell.py                 진입 파일 공통 껍데기 — run(slugs) 로 실을 메뉴를 고름
   registry.py              메뉴 자동 등록 (modules/*/module.py 의 META·render)
   result.py                공통 결과 형식 Result (inputs·summary·tables·notes·sources·charts)
   excel.py                 Result → 서식·차트 갖춘 xlsx
@@ -120,6 +124,18 @@ ECOS 통계검색 → 2.2 산업연관표 → 2.2.1 2020년 실측표 기준 →
 1. share.streamlit.io 에 GitHub 계정으로 로그인합니다.
 2. Create app → 저장소 `tskang89/macro-lab`, 브랜치 `main`, 파일 `app.py` 를 고릅니다.
 3. Advanced settings 에서 Python 3.12 를 고르고 Deploy 합니다.
+
+주제별 전용 앱(macromodellab.com 이 각 주제 페이지에서 거는 주소)도 같은 저장소·브랜치로
+앱을 따로 만들고 파일만 다르게 고릅니다. push 하면 네 앱이 함께 갱신됩니다.
+
+| 앱 | 파일 | 주소 |
+|:--|:--|:--|
+| 전체 플랫폼 | `app.py` | macro-lab.streamlit.app |
+| 잠재성장률 | `app_potential.py` | macro-lab-potential.streamlit.app |
+| 중립금리 | `app_neutral.py` | macro-lab-neutral.streamlit.app |
+| 산업연관표 | `app_io.py` | macro-lab-io.streamlit.app |
+
+앱마다 따로 잠들고 메모리 한도(약 2.7GB)도 따로 씁니다.
 
 메모 사항
 - `.npz` 자료(약 216MB, 파일당 22MB 이하)는 Git LFS 없이 일반 파일로 넣었습니다. GitHub 무료 LFS 대역폭(월 1GB)은 배포 몇 번이면 소진되기 때문입니다.

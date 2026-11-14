@@ -38,7 +38,8 @@ def discover() -> list[dict]:
     return mods
 
 
-def navigation(mods: list[dict]):
+def navigation(mods: list[dict], position: str = "sidebar"):
+    PAGES.clear()   # 진입 파일마다 실린 메뉴만 남긴다(없는 화면으로 가는 바로가기를 막음)
     pages: dict[str, list] = {}
     for meta in mods:
         title = meta["title"] + (" (준비 중)" if meta.get("status") == "planned" else "")
@@ -46,4 +47,4 @@ def navigation(mods: list[dict]):
                        default=meta.get("default", False))
         PAGES[meta["slug"]] = page
         pages.setdefault(meta["group"], []).append(page)
-    return st.navigation(pages)
+    return st.navigation(pages, position=position)
