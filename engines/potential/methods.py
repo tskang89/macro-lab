@@ -630,6 +630,41 @@ def _hours(df: pd.DataFrame) -> tuple[pd.Series, bool]:
     return pd.Series(0.0, index=df.index), False
 
 
+def pf_components(ystar: pd.Series, tfp_t: pd.Series, k: pd.Series, pop15: pd.Series, l_t: pd.Series,
+                  part_t: pd.Series | None = None, u_t: pd.Series | None = None, er_t: pd.Series | None = None,
+                  h_t: pd.Series | None = None, actual: dict[str, pd.Series] | None = None
+                  ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """생산함수모형의 구성요소 수준(분기)과 전년동기 대비 변화.
+
+    로그×100 계열(TFP·자본·근로시간·잠재노동)의 변화는 로그 차분이라 증가율(%)의 근사이고,
+    비율(참가율·자연실업률·고용률)의 변화는 %p. 잠재 GDP(로그) = TFP + (1−s)·자본 + s·잠재노동 이므로
+    잠재성장률 = TFP 증가율 + (1−s)·자본 증가율 + s·잠재노동 증가율 이 정확히 성립한다(기여도 표와 같은 분해).
+    h_t 는 근로시간 추세(로그×100), 없으면 None.
+    """
+    lv = pd.DataFrame({"추세 TFP(로그×100)": tfp_t, "자본투입(로그×100)": k, "15세이상인구(천명)": pop15})
+    if part_t is not None:
+        lv["경제활동참가율 추세(%)"] = part_t
+        lv["자연실업률(%)"] = u_t
+    if er_t is not None:
+        lv["고용률 추세(%)"] = er_t
+    if h_t is not None:
+        lv["평균 근로시간 추세(시간)"] = np.exp(h_t / 100)
+    lv["잠재노동(로그×100)"] = l_t
+    for name, s_ in (actual or {}).items():
+        lv[name] = s_.reindex(lv.index)
+    ch = pd.DataFrame({"잠재성장률(%)": ystar.reindex(lv.index).diff(4), "추세 TFP 증가율(%)": tfp_t.diff(4),
+                       "자본투입 증가율(%)": k.diff(4), "15세이상인구 증가율(%)": log100(pop15).diff(4)})
+    if part_t is not None:
+        ch["경제활동참가율 추세 변화(%p)"] = part_t.diff(4)
+        ch["자연실업률 변화(%p)"] = u_t.diff(4)
+    if er_t is not None:
+        ch["고용률 추세 변화(%p)"] = er_t.diff(4)
+    if h_t is not None:
+        ch["근로시간 추세 증가율(%)"] = h_t.diff(4)
+    ch["잠재노동 증가율(%)"] = l_t.diff(4)
+    return lv, ch
+
+
 HOURS_NOTE = ("평균 근로시간: OECD 취업자 1인당 연간 실근로시간(2008년~), 그 이전은 Penn World Table 증가율로 연장하고, 당해 연도는 "
               "사업체노동력조사 근로시간 증가율로 연장한 뒤 Denton 방식으로 분기화(한국은행 2024년은 경제활동인구조사 미시자료로 구성).")
 
@@ -737,7 +772,15 @@ def pf(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, extend: int 
                  f"TFP 추세: HP 필터 순환 부분 중 제조업 가동률(현재·직전 분기)로 설명되는 부분을 걷어낸 뒤 다시 HP 필터({cu_info})."
                  + (f" 전망 구간의 성장은 순환(수요 압력)으로 보아 TFP 추세는 {cut}까지 실적으로만 추정하고 그 뒤는 최근 3년 추세 기울기로 연장."
                     if cut is not None and cut < d.index[-1] else "")]
-    est.extra = {"잠재성장률 기여도": comp, "생산함수 투입": inputs}
+    act = {"경제활동참가율(%)": d["lf"] / d["pop15"] * 100, "실업률(%)": d["urate"]}
+    if labour == "emprate":
+        act = {"고용률(%)": d["emp"] / d["pop15"] * 100, "실업률(%)": d["urate"]}
+    if has_h:
+        act["평균 근로시간(시간)"] = np.exp(d["lh"] / 100)
+    act["실제 TFP(로그×100)"] = tfp
+    lv, ch = pf_components(ystar, tfp_t, k, d["pop15"], l_t, part_t=part_t, u_t=u_t, er_t=er_t,
+                           h_t=h_t if has_h else None, actual=act)
+    est.extra = {"잠재성장률 기여도": comp, "구성요소 변화": ch, "구성요소": lv, "생산함수 투입": inputs}
     return est
 
 
@@ -864,9 +907,17 @@ def pfmv(df: pd.DataFrame, labshare: float = 0.61, lam: float = 1600, start: str
                          "그 뒤 성장(반도체 호황 등)은 GDP 갭으로 잡힘. 노동 투입 추세는 전망 자료를 그대로 씀.")
     est.notes.append(SS.unc_note(unc) + " 노동소득분배율·자본투입 등 고정한 가정의 불확실성은 들어가지 않음(민감도 표 참조).")
     ustar = 100 * (1 - np.exp(e_ / 100))
+    act = {"경제활동참가율(%)": (df["lf"] / df["pop15"] * 100).reindex(idx), "실업률(%)": df["urate"].reindex(idx)}
+    if has_h:
+        act["평균 근로시간(시간)"] = np.exp(d["h"] / 100)
+    act["실제 TFP(로그×100)"] = d["y"] - (1 - s) * d["k"] - s * (d["n"] + d["p"] + d["e"] + d["h"])
+    lv, ch = pf_components(ystar, a_, d["k"], np.exp(d["n"] / 100), d["n"] + p_ + e_ + h_,
+                           part_t=100 * np.exp(p_ / 100), u_t=ustar, h_t=h_ if has_h else None, actual=act)
     est.extra = {"표준오차": pd.DataFrame({"GDP 갭 표준오차(%p)": sdu[:, 0],
                                         "GDP 갭 표준오차: 평활 오차만(%p)": unc["filter"][:, 0]}, index=idx),
                  "잠재성장률 기여도": comp,
+                 "구성요소 변화": ch,
+                 "구성요소": lv,
                  "자연실업률": pd.DataFrame({"실업률(%)": df["urate"].reindex(idx), "자연실업률 추정(%)": ustar,
                                         "근원물가 상승률(%)": pi.reindex(idx)})}
     return est

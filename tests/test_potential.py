@@ -92,6 +92,21 @@ def test_pf_contributions_add_up(ests, key):
     assert {"노동: 근로시간", "노동: 15세이상인구", "자본", "총요소생산성"} <= set(comp.columns)
 
 
+@pytest.mark.parametrize("key", ["pf", "pfmv"])
+def test_pf_components_decompose_potential_growth(ests, key):
+    """구성요소 변화: 잠재성장률 = TFP + (1−s)·자본 + s·잠재노동, 기여도 표와도 일치."""
+    e = ests[key]
+    ch = e.extra["구성요소 변화"].dropna()
+    s = e.params["노동소득분배율"]
+    rebuilt = ch["추세 TFP 증가율(%)"] + (1 - s) * ch["자본투입 증가율(%)"] + s * ch["잠재노동 증가율(%)"]
+    assert np.allclose(rebuilt, ch["잠재성장률(%)"], atol=1e-8)
+    comp = e.extra["잠재성장률 기여도"].reindex(ch.index)
+    assert np.allclose(comp["총요소생산성"], ch["추세 TFP 증가율(%)"], atol=1e-8)
+    lv = e.extra["구성요소"]
+    assert {"경제활동참가율 추세(%)", "자연실업률(%)", "평균 근로시간 추세(시간)", "15세이상인구(천명)"} <= set(lv.columns)
+    assert lv["자연실업률(%)"].dropna().between(0, 15).all()
+
+
 def test_pf_uses_capital_services_and_hours(kr, ests):
     p = ests["pf"].params
     assert "자본서비스" in p["자본투입"] and "근로시간" in p["잠재노동 정의"]

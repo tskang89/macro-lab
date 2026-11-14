@@ -67,7 +67,10 @@ def pages(base: str):
             return None
 
         def sens(tab):
-            pg.get_by_role("tab", name=tab, exact=True).click()
+            # 캐시가 없으면 첫 계산이 길어 탭이 늦게 나타난다(wait_done 이 계산 시작 전에 끝날 수 있음)
+            t = pg.get_by_role("tab", name=tab, exact=True)
+            t.wait_for(timeout=1800000)
+            t.click()
             wait_done()
             btn = pg.get_by_role("button", name="민감도 분석 실행")
             if btn.count():

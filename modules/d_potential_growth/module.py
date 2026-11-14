@@ -1,6 +1,7 @@
 """잠재성장률 추정 — 통계모형·준구조모형·생산함수모형으로 잠재 GDP·잠재성장률·GDP 갭을 추정해 비교."""
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import numpy as np
@@ -603,6 +604,12 @@ def detail_tab(df, ests, cfg, show, sources):
     st.plotly_chart(charts.ts_lines(ac, "연도", ["실제 성장률(%)", "잠재성장률(%)", "GDP 갭(연평균, %)"],
                                     "연간 실제 성장률·잠재성장률·GDP 갭", "%", 380, _step_a(len(ac)),
                                     dashed=("실제 성장률(%)",), shade=_sa(df)), width="stretch")
+    comp_t, comp_x = {}, []
+    if k in PF_KEYS and "구성요소 변화" in e.extra:
+        st.markdown("#### 구성요소별 변화")
+        st.caption("잠재성장률을 이루는 총요소생산성 추세·자본투입·잠재노동(15세이상인구·참가율·자연실업률·근로시간)이 "
+                   "각각 얼마나 변했는지 보여 줍니다. 기여도(가중치를 곱한 값)는 '생산함수 기여도' 탭.")
+        comp_t, comp_x = _comp_view(df, e, show, f"pg_det_comp_{k}")
     with st.expander("연간·분기 표", expanded=False):
         table(ac)
         table(q.drop(columns=["라벨"]))
@@ -613,16 +620,20 @@ def detail_tab(df, ests, cfg, show, sources):
     if k in HELP:
         st.markdown(f"**장점** {HELP[k][1]}  \n**한계** {HELP[k][2]}")
     tables = {"분기": q, "연간": a, "모수": pt}
+    tables.update(comp_t)
     for name, t in e.extra.items():
+        if name in ("구성요소 변화", "구성요소"):
+            continue                       # 위 구성요소 표(연간·기간별·분기)로 대신함
         tables[name] = _qframe(t, show) if isinstance(t.index, pd.PeriodIndex) else t
     res = Result(module=MODULE, analysis=e.name, inputs=_inputs(cfg, show),
                  summary={f"잠재성장률 {lab}(%)": L["pots"][k], f"GDP 갭 {lab}(%)": L["gaps"][k]},
-                 tables=tables, notes=COMMON_NOTES + _fc_notes() + e.notes, sources=sources,
+                 tables=tables, notes=COMMON_NOTES + _fc_notes() + e.notes + ([COMP_NOTE] if comp_t else []),
+                 sources=sources,
                  charts=[ExcelChart("분기", "라벨", ["실제 성장률(전년동기비, %)", "잠재성장률(전년동기비, %)"],
                                     "실제·잠재성장률 (전년동기비, %)", kind="line", top=None, label_skip=step),
                          ExcelChart("분기", "라벨", ["GDP 갭(%)"], "GDP 갭 (%)", kind="col", top=None, label_skip=step),
                          ExcelChart("연간", "연도", ["실제 성장률(%)", "잠재성장률(%)"], "연간 실제·잠재성장률 (%)",
-                                    kind="col", top=None)])
+                                    kind="col", top=None)] + comp_x)
     excel_button(res, f"pg_x_det_{k}")
     notes_box(res)
 
@@ -798,40 +809,38 @@ def pf_tab(df, ests, cfg, show, sources):
     if per is not None:
         tables["기간별 기여도"] = per
     tables["분기 기여도"] = qc
-    if "pf" in ests and pick in ("pf", "both"):
-        inp = _qframe(ests["pf"].extra["생산함수 투입"], show)
-        stp = _step_q(len(inp))
-        c1, c2 = st.columns(2)
-        if "경제활동참가율 추세(%)" in inp:
-            c1.plotly_chart(charts.ts_lines(inp, "라벨", ["경제활동참가율(%)", "경제활동참가율 추세(%)"], "경제활동참가율", "%", 320,
-                                            stp, zero=False, shade=_sq(df)), width="stretch")
-            c2.plotly_chart(charts.ts_lines(inp, "라벨", ["실업률(%)", "자연실업률(%)"], "실업률과 자연실업률", "%", 320, stp,
-                                            zero=False, shade=_sq(df)), width="stretch")
-        else:
-            c1.plotly_chart(charts.ts_lines(inp, "라벨", ["고용률(%)", "고용률 추세(%)"], "고용률(취업자/15세이상인구)", "%", 320,
-                                            stp, zero=False, shade=_sq(df)), width="stretch")
-            c2.plotly_chart(charts.ts_lines(inp, "라벨", ["실업률(%)"], "실업률", "%", 320, stp, zero=False, shade=_sq(df)), width="stretch")
-        c3, c4 = st.columns(2)
-        if "평균 근로시간 추세" in inp:
-            c3.plotly_chart(charts.ts_lines(inp, "라벨", ["평균 근로시간(연간, 시간)", "평균 근로시간 추세"],
-                                            "취업자 1인당 연간 근로시간", "시간", 320, stp, zero=False, shade=_sq(df)), width="stretch")
-        c4.plotly_chart(charts.ts_lines(inp, "라벨", ["실제 TFP(로그×100)", "가동률 조정 TFP", "추세 TFP"],
-                                        "총요소생산성 (로그×100)", "", 320, stp, zero=False, shade=_sq(df)), width="stretch")
-        kg = _capital_growth(df, show)
-        if kg is not None:
-            st.plotly_chart(charts.ts_lines(kg, "연도", list(kg.columns[1:]), "자본서비스와 생산자본스톡 증가율 (연간)", "%", 320,
-                                            _step_a(len(kg)), shade=_sa(df)), width="stretch")
-            tables["자본 증가율"] = kg
-        tables["생산함수 투입"] = inp
     st.markdown("**연간 기여도 (%p)**")
     table(ann)
+
+    # 구성요소별 변화: 모형마다(두 모형 평균이면 모형별 하위 탭)
+    st.markdown("#### 구성요소별 변화")
+    st.caption("기여도의 바탕이 되는 각 구성요소(TFP 추세·자본투입·15세이상인구·참가율 추세·자연실업률·근로시간 추세)의 변화. "
+               "두 모형은 추세를 뽑는 방식이 달라(HP 필터 vs 상태공간 동시 추정) 구성요소 경로도 다릅니다.")
+    shown = avail if pick == "both" else [pick]
+    boxes = st.tabs([M.METHODS[k_] for k_ in shown]) if len(shown) == 2 else [st.container()]
+    comp_x = []
+    for k_, box in zip(shown, boxes):
+        with box:
+            T, xc = _comp_view(df, ests[k_], show, f"pg_pf_comp_{k_}")
+        pre = "" if len(shown) == 1 else ("접근 " if k_ == "pf" else "다변량 ")
+        for n_, t_ in T.items():
+            tables[pre + n_] = t_
+        comp_x += [dataclasses.replace(c_, table=pre + c_.table) for c_ in xc]
+    kg = _capital_growth(df, show)
+    if kg is not None:
+        st.plotly_chart(charts.ts_lines(kg, "연도", list(kg.columns[1:]), "자본서비스와 생산자본스톡 증가율 (연간)", "%", 320,
+                                        _step_a(len(kg)), shade=_sa(df)), width="stretch")
+        tables["자본 증가율"] = kg
+    if "pf" in shown:
+        tables["생산함수 투입"] = _qframe(ests["pf"].extra["생산함수 투입"], show)
     res = Result(module=MODULE, analysis=f"생산함수 기여도 분해 ({label_})", inputs=_inputs(cfg, show),
                  summary={f"{r['연도']}년 {c}(%p)": r[c] for _, r in ann.tail(1).iterrows()
                           for c in parts + ["잠재성장률(로그 근사)"]},
                  tables=tables,
-                 notes=COMMON_NOTES + _fc_notes() + e_notes + ["기여도는 로그 차분(전년동기비)이라 합이 잠재성장률의 근사치이며, 연간은 4개 분기 평균."],
+                 notes=COMMON_NOTES + _fc_notes() + e_notes + ["기여도는 로그 차분(전년동기비)이라 합이 잠재성장률의 근사치이며, 연간은 4개 분기 평균.",
+                                                                 COMP_NOTE],
                  sources=sources,
-                 charts=[ExcelChart("연간 기여도", "연도", parts, "잠재성장률 기여도 (%p)", kind="col", top=None)])
+                 charts=[ExcelChart("연간 기여도", "연도", parts, "잠재성장률 기여도 (%p)", kind="col", top=None)] + comp_x)
     excel_button(res, "pg_x_pf")
     notes_box(res)
 
@@ -849,6 +858,83 @@ def _period_contrib(comp: pd.DataFrame, parts: list[str], fy=frozenset()) -> pd.
     out = pd.DataFrame(rows).round(2)
     out.index.name = "기간"
     return out.reset_index()
+
+
+PF_KEYS = ("pf", "pfmv")
+CH_FACTORS = ["추세 TFP 증가율(%)", "자본투입 증가율(%)", "잠재노동 증가율(%)"]
+CH_LABOUR = ["15세이상인구 증가율(%)", "경제활동참가율 추세 변화(%p)", "자연실업률 변화(%p)", "고용률 추세 변화(%p)",
+             "근로시간 추세 증가율(%)"]
+LV_ANNUAL = ["경제활동참가율 추세(%)", "자연실업률(%)", "고용률 추세(%)", "평균 근로시간 추세(시간)"]
+COMP_NOTE = ("구성요소별 변화: 증가율(%)은 로그 차분(전년동기비)이고 참가율·자연실업률·고용률 변화는 %p. "
+             "잠재성장률 = 추세 TFP 증가율 + (1−s)×자본투입 증가율 + s×잠재노동 증가율(s = 노동소득분배율)이 정확히 성립하며, "
+             "잠재노동 증가율 ≈ 15세이상인구 증가율 + 참가율 추세 변화율 + (1−자연실업률) 변화율 + 근로시간 추세 증가율. "
+             "연간 값은 4개 분기 평균(= 연평균 수준의 전년 대비 변화).")
+
+
+def _comp_tables(df: pd.DataFrame, e: M.Estimate, show: str) -> dict[str, pd.DataFrame]:
+    """생산함수모형의 구성요소 변화 — 연간·기간별·분기 표."""
+    ch, lv = e.extra["구성요소 변화"], e.extra["구성요소"]
+    yr = ch.index.year
+    full = ch.groupby(yr)["잠재성장률(%)"].count() == 4
+    a = ch.groupby(yr).mean()[full]
+    lva = lv.groupby(lv.index.year).mean()[[c for c in LV_ANNUAL if c in lv.columns]]
+    ann = a.join(lva).loc[int(show[:4]):].round(2)
+    fy = A.fc_years(df)
+    ann.insert(0, "구분", ["전망 포함" if y in fy else "실적" for y in ann.index])
+    ann.index.name = "연도"
+    ann = ann.reset_index()
+    ann["연도"] = ann["연도"].astype(str)
+    out = {"구성요소 변화(연간)": ann}
+    a2 = a.dropna()
+    if len(a2) >= 5:
+        rows = []
+        for s_, e_ in _bins(a2.index):
+            r = a2.loc[s_:e_].mean()
+            r.name = _plabel(s_, e_) + ("e)" if any(y in fy for y in range(s_, e_ + 1)) else "")
+            rows.append(r)
+        per = pd.DataFrame(rows).round(2)
+        per.index.name = "기간"
+        out["구성요소 변화(기간별)"] = per.reset_index()
+    out["구성요소 변화(분기)"] = _qframe(ch.round(3), show)
+    out["구성요소 수준(분기)"] = _qframe(lv.round(3), show)
+    return out
+
+
+def _comp_view(df: pd.DataFrame, e: M.Estimate, show: str, key: str) -> tuple[dict[str, pd.DataFrame], list[ExcelChart]]:
+    """구성요소별 변화 화면(표·그림)을 그리고 엑셀용 표·차트를 돌려준다."""
+    T = _comp_tables(df, e, show)
+    ann = T["구성요소 변화(연간)"]
+    fac = [c for c in CH_FACTORS if c in ann]
+    lab = [c for c in CH_LABOUR if c in ann]
+    sa = _step_a(len(ann))
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(charts.ts_lines(ann, "연도", ["잠재성장률(%)"] + fac, "잠재성장률과 생산요소별 증가율 (연평균)", "%", 360, sa,
+                                    dashed=("잠재성장률(%)",), shade=_sa(df)), width="stretch", key=f"{key}_fac")
+    c2.plotly_chart(charts.ts_lines(ann, "연도", lab, "잠재노동 구성요소 변화 (연평균, % · %p)", "", 360, sa, shade=_sa(df)),
+                    width="stretch", key=f"{key}_lab")
+    lvq = T["구성요소 수준(분기)"]
+    sq = _step_q(len(lvq))
+    pairs = [(["경제활동참가율(%)", "경제활동참가율 추세(%)"], "경제활동참가율: 실제와 추세", "%"),
+             (["실업률(%)", "자연실업률(%)"], "실업률과 자연실업률", "%"),
+             (["고용률(%)", "고용률 추세(%)"], "고용률: 실제와 추세", "%"),
+             (["평균 근로시간(시간)", "평균 근로시간 추세(시간)"], "취업자 1인당 연간 근로시간: 실제와 추세", "시간"),
+             (["실제 TFP(로그×100)", "추세 TFP(로그×100)"], "총요소생산성: 실제와 추세 (로그×100)", "")]
+    pairs = [p for p in pairs if all(c in lvq for c in p[0])]
+    for i in range(0, len(pairs), 2):
+        cols = st.columns(2)
+        for j, (col, (ys, title, unit)) in enumerate(zip(cols, pairs[i:i + 2])):
+            col.plotly_chart(charts.ts_lines(lvq, "라벨", ys, title, unit, 300, sq, zero=False, shade=_sq(df),
+                                             dashed=(ys[0],)), width="stretch", key=f"{key}_lv{i + j}")
+    if "구성요소 변화(기간별)" in T:
+        st.markdown("**기간별 구성요소 변화 (연평균)**")
+        table(T["구성요소 변화(기간별)"], key=f"{key}_per")
+    st.markdown("**연간 구성요소 변화**")
+    table(ann, key=f"{key}_ann")
+    st.caption(COMP_NOTE)
+    xc = [ExcelChart("구성요소 변화(연간)", "연도", ["잠재성장률(%)"] + fac, "잠재성장률과 생산요소별 증가율 (%)",
+                     kind="line", top=None),
+          ExcelChart("구성요소 변화(연간)", "연도", lab, "잠재노동 구성요소 변화 (%, %p)", kind="line", top=None)]
+    return T, xc
 
 
 def _capital_growth(df: pd.DataFrame, show: str) -> pd.DataFrame | None:
